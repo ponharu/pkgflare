@@ -1,0 +1,93 @@
+{
+  "name": "@ponharu/pkgflare",
+  "version": "0.0.0",
+  "description": "Deploy a private npm registry to your own Cloudflare account.",
+  "keywords": [
+    "cloudflare",
+    "d1",
+    "npm",
+    "private-registry",
+    "r2",
+    "workers"
+  ],
+  "homepage": "https://github.com/ponharu/pkgflare#readme",
+  "bugs": {
+    "url": "https://github.com/ponharu/pkgflare/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ponharu/pkgflare.git"
+  },
+  "bin": {
+    "pkgflare": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "migrations",
+    "LICENSE",
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "build": "tsup",
+    "check": "bun run typecheck && bun run lint && bun run format:check",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --type-aware .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "test": "bun run build && vitest run && vitest run --config vitest.worker.config.ts",
+    "test:e2e": "bun run build && bun scripts/test-clients.ts",
+    "test:package": "bun run build && bun scripts/test-package.ts",
+    "test:coverage": "bun run build && vitest run --coverage && vitest run --config vitest.worker.config.ts --coverage --coverage.provider=istanbul",
+    "prepack": "bun run build",
+    "prepare": "lefthook install",
+    "release": "semantic-release"
+  },
+  "dependencies": {
+    "jiti": "^2.7.0",
+    "semver": "^7.8.5",
+    "wrangler": "^4.125.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260822.1",
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/github": "12.0.6",
+    "@semantic-release/npm": "13.1.5",
+    "@semantic-release/release-notes-generator": "14.1.0",
+    "@types/node": "^24.3.0",
+    "@types/semver": "^7.7.1",
+    "@vitest/coverage-istanbul": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.11",
+    "conventional-changelog-conventionalcommits": "9.1.0",
+    "lefthook": "^2.1.10",
+    "oxfmt": "^0.64.0",
+    "oxlint": "^1.79.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "pnpm": "^11.22.0",
+    "semantic-release": "25.0.3",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "yarn": "^1.22.22"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "bun@1.4.0"
+}
