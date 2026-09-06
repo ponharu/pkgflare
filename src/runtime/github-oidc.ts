@@ -1,5 +1,5 @@
 import { createLocalJWKSet, errors, jwtVerify, type JSONWebKeySet, type LocalJWKSet } from "jose";
-import type { Permission } from "../config.js";
+import { isValidGitHubJobWorkflowRefClaim, type Permission } from "../config.js";
 import type { RuntimeContext } from "./types.js";
 
 const githubIssuer = "https://token.actions.githubusercontent.com";
@@ -223,7 +223,9 @@ export async function authorizeGitHubOidc(
       matchesPattern(workflowRef, subject.workflowRef) &&
       (subject.jobWorkflowRef === undefined
         ? jobWorkflowRef === null
-        : jobWorkflowRef !== null && matchesPattern(jobWorkflowRef, subject.jobWorkflowRef)) &&
+        : jobWorkflowRef !== null &&
+          isValidGitHubJobWorkflowRefClaim(jobWorkflowRef) &&
+          matchesPattern(jobWorkflowRef, subject.jobWorkflowRef)) &&
       grants(subject.permissions, required) &&
       grantsPackage(subject.packages, packageName),
   );
