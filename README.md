@@ -162,6 +162,7 @@ auth: {
       repositoryOwnerId: "987654321",
       ref: "refs/heads/main",
       workflowRef: "acme/example/.github/workflows/publish.yml@refs/heads/main",
+      jobWorkflowRef: "acme/example/.github/workflows/publish.yml@refs/heads/main",
       permissions: ["publish"],
       packages: ["@acme/example"],
     }],
