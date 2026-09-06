@@ -60,7 +60,7 @@ async function fetchJwks(): Promise<CachedJwks> {
   try {
     response = await fetch(githubJwksUrl, {
       headers: { accept: "application/json" },
-      redirect: "error",
+      redirect: "manual",
       signal: AbortSignal.timeout(jwksTimeoutMilliseconds),
     });
   } catch {
