@@ -297,8 +297,80 @@ describe("GitHub Actions OIDC authentication", () => {
     });
     expect(await oidcDecision(reusable, "publish", "@acme/reusable-package")).toBeNull();
 
+    const differentReusableRevision = await oidcToken({
+      repository_id: "333333",
+      workflow_ref: "acme/caller/.github/workflows/release.yml@refs/heads/main",
+      job_workflow_ref: `acme/workflows/.github/workflows/npm-publish.yml@${"b".repeat(40)}`,
+    });
+    expect(
+      (await oidcDecision(differentReusableRevision, "publish", "@acme/reusable-package"))?.status,
+    ).toBe(403);
+
     expect((await oidcDecision(await oidcToken({ event_name: "pull_request" })))?.status).toBe(403);
     expect((await oidcDecision(await oidcToken({ event_name: "merge_group" })))?.status).toBe(403);
+  });
+
+  it("allows ref updates for one reusable workflow without widening other grants", async () => {
+    mockGithubJwks();
+    const jobWorkflowIdentity = "acme/automation/.github/workflows/publish.yml";
+    const claims: OidcClaims = {
+      repository_id: "444444",
+      workflow_ref: "acme/caller/.github/workflows/release.yml@refs/heads/main",
+    };
+    const packageName = "@acme/updatable-reusable";
+
+    for (const jobWorkflowRef of [
+      `${jobWorkflowIdentity}@${"a".repeat(40)}`,
+      `${jobWorkflowIdentity}@${"b".repeat(40)}`,
+      `${jobWorkflowIdentity}@refs/heads/main`,
+      `${jobWorkflowIdentity}@refs/tags/v1.2.3`,
+    ]) {
+      const token = await oidcToken({
+        ...claims,
+        job_workflow_ref: jobWorkflowRef,
+      });
+      expect(await oidcDecision(token, "publish", packageName)).toBeNull();
+    }
+
+    const deniedClaims: OidcClaims[] = [
+      { ...claims, job_workflow_ref: `acme/other/.github/workflows/publish.yml@${"a".repeat(40)}` },
+      {
+        ...claims,
+        job_workflow_ref: `acme/automation/.github/workflows/other.yml@${"a".repeat(40)}`,
+      },
+      { ...claims, job_workflow_ref: `${jobWorkflowIdentity}@not-a-git-ref` },
+      {
+        ...claims,
+        repository_id: "999999",
+        job_workflow_ref: `${jobWorkflowIdentity}@${"a".repeat(40)}`,
+      },
+      {
+        ...claims,
+        repository_owner_id: "999999",
+        job_workflow_ref: `${jobWorkflowIdentity}@${"a".repeat(40)}`,
+      },
+      {
+        ...claims,
+        ref: "refs/heads/feature",
+        job_workflow_ref: `${jobWorkflowIdentity}@${"a".repeat(40)}`,
+      },
+      {
+        ...claims,
+        workflow_ref: "acme/caller/.github/workflows/other.yml@refs/heads/main",
+        job_workflow_ref: `${jobWorkflowIdentity}@${"a".repeat(40)}`,
+      },
+    ];
+    for (const denied of deniedClaims) {
+      expect((await oidcDecision(await oidcToken(denied), "publish", packageName))?.status).toBe(
+        403,
+      );
+    }
+
+    const token = await oidcToken({
+      ...claims,
+      job_workflow_ref: `${jobWorkflowIdentity}@${"a".repeat(40)}`,
+    });
+    expect((await oidcDecision(token, "publish", "@acme/not-authorized"))?.status).toBe(403);
   });
 
   it("prevents permission escalation and access to another package", async () => {

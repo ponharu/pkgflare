@@ -95,6 +95,22 @@ describe("normalizeConfig", () => {
     expect(config.auth.githubOidc?.subjects[0]?.jobWorkflowRef).toBe(jobWorkflowRef);
   });
 
+  it("accepts a complete ref wildcard for one reusable workflow identity", () => {
+    const jobWorkflowRef = "acme/automation/.github/workflows/publish.yml@*";
+    const config = normalizeJobWorkflowRef(jobWorkflowRef);
+
+    expect(config.auth.githubOidc?.subjects[0]?.jobWorkflowRef).toBe(jobWorkflowRef);
+  });
+
+  it.each([
+    "acme/*/.github/workflows/publish.yml@*",
+    "acme/automation/.github/workflows/*.yml@*",
+    "acme/automation/.github/workflows/publish.yml@refs/*",
+    "acme/automation/.github/workflows/publish.yml@**",
+  ])("rejects a reusable workflow wildcard outside the complete ref: %s", (jobWorkflowRef) => {
+    expect(() => normalizeJobWorkflowRef(jobWorkflowRef)).toThrow("jobWorkflowRef");
+  });
+
   it.each(["refs/heads/main", "refs/tags/v1.2.3"])(
     "continues to accept a reusable workflow at %s",
     (ref) => {

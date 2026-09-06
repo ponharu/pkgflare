@@ -73,7 +73,9 @@ const refPattern = /^refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?$/;
 const workflowRefPattern =
   /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?$/;
 const jobWorkflowRefPattern =
-  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@(?:refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?|[0-9a-f]{40})$/;
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@(?:refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?|[0-9a-f]{40}|\*)$/;
+const jobWorkflowRefClaimPattern =
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@(?:refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+|[0-9a-f]{40})$/;
 const packageSegmentPattern = /^(?!\.)(?:[a-z0-9._-]+)$/;
 const maximumGithubSubjects = 128;
 const maximumPackagesPerSubject = 128;
@@ -81,6 +83,10 @@ const maximumRuntimeConfigBytes = 5 * 1024;
 
 export function defineConfig(config: PkgflareConfig): PkgflareConfig {
   return config;
+}
+
+export function isValidGitHubJobWorkflowRefClaim(value: string): boolean {
+  return jobWorkflowRefClaimPattern.test(value);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -145,7 +151,7 @@ function normalizeGithubOidc(
       (typeof jobWorkflowRef !== "string" || !isSafePattern(jobWorkflowRef, jobWorkflowRefPattern))
     ) {
       throw new Error(
-        `${label} jobWorkflowRef must identify a reusable workflow at a full commit SHA or an exact/trailing-wildcard branch or tag ref`,
+        `${label} jobWorkflowRef must identify one workflow at any valid ref (@*), a full commit SHA, or an exact/trailing-wildcard branch or tag ref`,
       );
     }
     const permissions = normalizePermissions(subjectValue.permissions, label);

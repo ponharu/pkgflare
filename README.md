@@ -162,7 +162,7 @@ auth: {
       repositoryOwnerId: "987654321",
       ref: "refs/heads/main",
       workflowRef: "acme/example/.github/workflows/publish.yml@refs/heads/main",
-      jobWorkflowRef: "acme/example/.github/workflows/publish.yml@refs/heads/main",
+      jobWorkflowRef: "acme/example/.github/workflows/publish.yml@*",
       permissions: ["publish"],
       packages: ["@acme/example"],
     }],
@@ -185,7 +185,7 @@ steps:
     run: NPM_TOKEN="$(npx pkgflare auth github --audience 'pkgflare://packages.example.com')" npm publish
 ```
 
-The package repository's `.npmrc` still points its scope to pkgflare and references `${NPM_TOKEN}`. Use the same command with `npm ci` or another supported client for OIDC-authenticated reads. See [GitHub Actions OIDC](./docs/operations.md#github-actions-oidc) for reusable workflows, wildcard rules, and the security model.
+The package repository's `.npmrc` still points its scope to pkgflare and references `${NPM_TOKEN}`. Use the same command with `npm ci` or another supported client for OIDC-authenticated reads. The `@*` rule fixes the exact job workflow identity while allowing its valid Git ref or full commit SHA to change. See [GitHub Actions OIDC](./docs/operations.md#github-actions-oidc) for reusable workflows, stricter ref rules, and the security model.
 
 Versions are immutable. To promote or roll back an existing version, use the publish token with `npm dist-tag`:
 
