@@ -109,7 +109,7 @@ githubOidc: {
 }
 ```
 
-Repository and owner IDs are decimal GitHub IDs and remain the primary repository identity checks across renames. `ref`, `workflowRef`, and optional `jobWorkflowRef` are exact matches unless they end in `*`, in which case only that final prefix wildcard is supported. Refs must be branch or tag refs. Package grants are exact scoped package names or a complete scope wildcard such as `@acme/*`; they must belong to a configured registry scope.
+Repository and owner IDs are decimal GitHub IDs and remain the primary repository identity checks across renames. `ref` and `workflowRef` accept branch or tag refs; they are exact matches unless they end in `*`, in which case only that final prefix wildcard is supported. `jobWorkflowRef` accepts the same refs or an exact 40-character lowercase hexadecimal commit SHA. Package grants are exact scoped package names or a complete scope wildcard such as `@acme/*`; they must belong to a configured registry scope.
 
 The complete normalized registry configuration must fit Cloudflare's 5 KiB per-variable limit. pkgflare checks this before deployment; prefer a scope wildcard or another registry when a very large subject/package matrix would exceed it.
 
@@ -117,6 +117,17 @@ For a normal workflow, omit `jobWorkflowRef`. A token containing `job_workflow_r
 
 - `repositoryId`, `repositoryOwnerId`, `ref`, and `workflowRef` identify and constrain the caller.
 - `jobWorkflowRef` identifies the called reusable workflow and its trusted ref.
+
+Pin the reusable workflow to its full commit SHA when possible:
+
+```ts
+{
+  jobWorkflowRef:
+    "acme/workflows/.github/workflows/npm-publish.yml@0123456789abcdef0123456789abcdef01234567",
+}
+```
+
+GitHub keeps the caller information in the standard claims and puts the called workflow reference in `job_workflow_ref`. A reusable workflow may be called by branch, tag, or SHA; GitHub recommends a commit SHA as the safest option for stability and security. See GitHub's documentation for [OIDC with reusable workflows](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows) and [calling reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
 
 OIDC requests from `pull_request`, `pull_request_target`, related pull-request events, and merge queues are rejected even if another claim pattern would match. Use a trusted branch, tag, or manually dispatched workflow. A `publish` grant includes reads and dist-tag changes only for its allowed packages; a `read` grant cannot publish or change tags. Metadata and tarball reads apply the same package grant.
 

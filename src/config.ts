@@ -72,6 +72,8 @@ const audiencePattern = /^[\x21-\x7e]{1,256}$/;
 const refPattern = /^refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?$/;
 const workflowRefPattern =
   /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?$/;
+const jobWorkflowRefPattern =
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@(?:refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+\*?|[0-9a-f]{40})$/;
 const packageSegmentPattern = /^(?!\.)(?:[a-z0-9._-]+)$/;
 const maximumGithubSubjects = 128;
 const maximumPackagesPerSubject = 128;
@@ -140,10 +142,10 @@ function normalizeGithubOidc(
     }
     if (
       jobWorkflowRef !== undefined &&
-      (typeof jobWorkflowRef !== "string" || !isSafePattern(jobWorkflowRef, workflowRefPattern))
+      (typeof jobWorkflowRef !== "string" || !isSafePattern(jobWorkflowRef, jobWorkflowRefPattern))
     ) {
       throw new Error(
-        `${label} jobWorkflowRef must identify a reusable workflow at an exact or trailing-wildcard ref`,
+        `${label} jobWorkflowRef must identify a reusable workflow at a full commit SHA or an exact/trailing-wildcard branch or tag ref`,
       );
     }
     const permissions = normalizePermissions(subjectValue.permissions, label);
