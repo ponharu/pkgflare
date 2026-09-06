@@ -81,11 +81,67 @@ npx pkgflare deploy --adopt-existing
 
 Adoption permits applying migrations and deploying over existing resources; it does not import or validate arbitrary registry data. Use it only for resources intended for this pkgflare deployment. A successful Worker creation whose result was lost can also require adoption on retry. Saved D1 and R2 identifiers are reused.
 
-## Tokens and access
+## Registry authentication
 
-All tokens cover the whole registry. Publish permission includes read access and dist-tag changes. Use read-only tokens for installation jobs and keep publish tokens limited to package release jobs.
+Cloudflare Secret tokens cover the whole registry. Publish permission includes read access and dist-tag changes. Use read-only tokens for installation jobs and keep publish tokens limited to package release jobs.
 
 For rotation, add a new binding while retaining the old one, deploy, register the new Secret, and switch clients to it. Once clients have switched, remove the old binding and deploy again, then delete the old Secret. Removing a configured binding revokes that token after deployment. For urgent revocation, delete its Secret through Cloudflare; other configured tokens remain usable. Revocation cannot retract package bytes already downloaded by clients.
+
+## GitHub Actions OIDC
+
+GitHub Actions jobs may authenticate without a stored registry token. pkgflare accepts a GitHub OIDC JWT directly as the npm Bearer token. This preserves normal npm-compatible requests and avoids adding a pkgflare session-signing Secret or token-exchange endpoint. The JWT is short-lived and must be requested separately by each job.
+
+This feature is registry authentication only. It is not npmjs.org Trusted Publishing, does not publish to npmjs.org, and does not authenticate Wrangler or the Cloudflare management API.
+
+Configure `auth.githubOidc.audience` and one or more subjects. Each subject is an allow rule:
+
+```ts
+githubOidc: {
+  audience: "pkgflare://packages.example.com",
+  subjects: [{
+    repositoryId: "123456789",
+    repositoryOwnerId: "987654321",
+    ref: "refs/tags/v*",
+    workflowRef: "acme/example/.github/workflows/publish.yml@refs/tags/v*",
+    permissions: ["publish"],
+    packages: ["@acme/example"],
+  }],
+}
+```
+
+Repository and owner IDs are decimal GitHub IDs and remain the primary repository identity checks across renames. `ref`, `workflowRef`, and optional `jobWorkflowRef` are exact matches unless they end in `*`, in which case only that final prefix wildcard is supported. Refs must be branch or tag refs. Package grants are exact scoped package names or a complete scope wildcard such as `@acme/*`; they must belong to a configured registry scope.
+
+The complete normalized registry configuration must fit Cloudflare's 5 KiB per-variable limit. pkgflare checks this before deployment; prefer a scope wildcard or another registry when a very large subject/package matrix would exceed it.
+
+For a normal workflow, omit `jobWorkflowRef`. A token containing `job_workflow_ref` will not match that rule. For a reusable workflow, set all of these independently:
+
+- `repositoryId`, `repositoryOwnerId`, `ref`, and `workflowRef` identify and constrain the caller.
+- `jobWorkflowRef` identifies the called reusable workflow and its trusted ref.
+
+OIDC requests from `pull_request`, `pull_request_target`, related pull-request events, and merge queues are rejected even if another claim pattern would match. Use a trusted branch, tag, or manually dispatched workflow. A `publish` grant includes reads and dist-tag changes only for its allowed packages; a `read` grant cannot publish or change tags. Metadata and tarball reads apply the same package grant.
+
+The job needs `id-token: write`. Keep a normal scope-specific `.npmrc` with `${NPM_TOKEN}`, then obtain the JWT through command substitution so it is not printed:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-node@v4
+    with:
+      node-version: 22
+  - run: npm ci
+  - name: Publish package
+    run: NPM_TOKEN="$(npx pkgflare auth github --audience 'pkgflare://packages.example.com')" npm publish
+```
+
+For read-only CI, grant `permissions: ["read"]` and run the same token command with `npm ci`, pnpm, Yarn Classic, or Bun. Never echo the command result or enable shell tracing around it.
+
+The JWT is a Bearer credential and can be replayed until it expires. Request it immediately before the package command, do not persist it in files or job outputs, and keep untrusted scripts out of the authenticated step.
+
+The Worker accepts only RS256 tokens issued by `https://token.actions.githubusercontent.com` for the configured audience. It validates signature, `typ`, expiry, not-before, issued-at age, subject presence, JWT ID, repository and owner IDs, ref, workflow, event, permission, and package. JWKS is fetched only from GitHub's fixed endpoint with a five-second timeout, 64 KiB/16-key response limits, a five-minute in-isolate cache, and a 30-second unknown-key refresh cooldown. Invalid tokens are rejected. An unavailable or invalid JWKS endpoint fails closed with 503; token contents are not logged.
 
 ## Backups and restoration
 
@@ -102,10 +158,10 @@ Failed publishing may leave unreachable objects. Automatic orphan collection is 
 | Symptom                 | What to check                                                                                              |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
 | 401                     | `NPM_TOKEN` is set and the `.npmrc` authentication hostname matches the registry URL                       |
-| 403                     | The token matches a configured Secret and grants the required permission                                   |
+| 403                     | The Secret or OIDC token matches its configured permission, package, and workflow trust rules              |
 | 409 on publish          | The version already exists; inspect it before deciding whether to publish a new version                    |
 | 413                     | Publish metadata exceeds 1 MiB, or the encoded request exceeds Cloudflare's limit                          |
-| 503                     | Retry after checking storage availability; a publish result may be uncertain, so inspect the version first |
+| 503                     | Check storage or GitHub JWKS availability; a publish result may be uncertain, so inspect the version first |
 | Existing resource error | Restore saved state or verify ownership before explicit adoption                                           |
 | Account mismatch        | Configuration, environment, and saved state select the same Cloudflare account                             |
 

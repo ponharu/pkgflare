@@ -30,7 +30,11 @@ Changes to this path must preserve:
 
 ## Authentication boundary
 
-Secrets provide a small deployment-owned token set. There is no identity database or per-user session lifecycle. Read and publish permissions apply registry-wide; separate deployments provide separate trust boundaries. Adding per-package permissions would require an explicit authorization design, not just another token label.
+Secrets provide a small deployment-owned token set with registry-wide read or publish permissions. GitHub Actions OIDC adds short-lived workflow identity with explicit repository ID, owner ID, ref, workflow, permission, and package grants. Both methods enter the same route authorization boundary, so package grants cover metadata, tarballs, publish, and dist-tag operations consistently.
+
+pkgflare uses the GitHub JWT directly as the npm Bearer token. A token exchange would shorten or reshape the credential but would also require a pkgflare signing key, a new session endpoint, and another token lifecycle. Direct verification keeps standard npm/Bun requests, retains GitHub's short expiry, and makes GitHub's fixed issuer/JWKS the only signing trust root. JWKS fetches are bounded, cached, and fail closed.
+
+Normal and reusable workflows are separate trust cases. A normal rule requires the absence of `job_workflow_ref`; a reusable rule matches both the caller's `workflow_ref` and the called `job_workflow_ref`. Pull-request contexts are not accepted. Immutable numeric repository and owner IDs are authoritative; workflow path claims add execution constraints rather than replacing identity.
 
 Unexpected diagnostics identify the request and operation without recording credentials or package payloads. Normal authenticated metadata responses do contain package manifests; the privacy restriction applies to diagnostics and error responses.
 
@@ -51,6 +55,7 @@ Migrations run before Worker deployment. New migrations must remain compatible w
 | `src/runtime/publish.ts`        | Publish validation and D1 commit/reconciliation                           |
 | `src/runtime/read.ts`           | Metadata and tarball reads                                                |
 | `src/runtime/dist-tags.ts`      | Tag reads and mutations                                                   |
+| `src/runtime/github-oidc.ts`    | GitHub JWT verification, bounded JWKS retrieval, and package grants       |
 | `migrations/`                   | Append-only D1 schema history                                             |
 
 ## Deliberate boundaries

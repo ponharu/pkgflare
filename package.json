@@ -60,6 +60,7 @@
   },
   "dependencies": {
     "jiti": "^2.7.0",
+    "jose": "6.2.10",
     "semver": "^7.8.5",
     "wrangler": "^4.125.0"
   },

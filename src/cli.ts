@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { open } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import { deploy } from "./cli/deploy.js";
+import { requestGithubOidcToken } from "./cli/github-oidc.js";
 
 function valueAfter(arguments_: readonly string[], flag: string): string | undefined {
   const index = arguments_.indexOf(flag);
@@ -13,7 +14,7 @@ function valueAfter(arguments_: readonly string[], flag: string): string | undef
 
 function help(): void {
   process.stdout.write(
-    `pkgflare\n\nUsage:\n  pkgflare deploy [--config <path>] [--secrets-file <path>] [--adopt-existing]\n  pkgflare init\n  pkgflare token generate\n`,
+    `pkgflare\n\nUsage:\n  pkgflare deploy [--config <path>] [--secrets-file <path>] [--adopt-existing]\n  pkgflare auth github --audience <audience>\n  pkgflare init\n  pkgflare token generate\n`,
   );
 }
 
@@ -68,6 +69,11 @@ async function main(arguments_: string[]): Promise<void> {
   }
   if (command === "init") {
     await init(process.cwd());
+    return;
+  }
+  if (command === "auth" && subcommand === "github") {
+    const token = await requestGithubOidcToken(valueAfter(arguments_, "--audience"));
+    process.stdout.write(`${token}\n`);
     return;
   }
   if (command === "token" && subcommand === "generate") {

@@ -43,7 +43,7 @@ async function handle(request: Request, env: Env, requestId: string): Promise<Re
       if (request.method !== "GET" && request.method !== "HEAD") {
         return methodNotAllowed(["GET", "HEAD"]);
       }
-      const denied = await authorize(request, context, "read");
+      const denied = await authorize(request, context, "read", distTagRoute.packageName);
       if (denied !== null) return denied;
       const response = await readDistTags(context, distTagRoute.packageName);
       return request.method === "HEAD"
@@ -53,7 +53,7 @@ async function handle(request: Request, env: Env, requestId: string): Promise<Re
     if (request.method !== "PUT" && request.method !== "DELETE") {
       return methodNotAllowed(["PUT", "DELETE"]);
     }
-    const denied = await authorize(request, context, "publish");
+    const denied = await authorize(request, context, "publish", distTagRoute.packageName);
     if (denied !== null) return denied;
     return request.method === "PUT"
       ? setDistTag(request, context, distTagRoute.packageName, distTagRoute.tag)
@@ -67,19 +67,19 @@ async function handle(request: Request, env: Env, requestId: string): Promise<Re
     if (request.method !== "GET" && request.method !== "HEAD") {
       return methodNotAllowed(["GET", "HEAD"]);
     }
-    const denied = await authorize(request, context, "read");
+    const denied = await authorize(request, context, "read", route.packageName);
     if (denied !== null) return denied;
     return readTarball(request, context, route.packageName, route.remainder[1] ?? "");
   }
 
   if (route.remainder.length > 1) return npmError(404, "not_found", "endpoint not found");
   if (request.method === "PUT" && route.remainder.length === 0) {
-    const denied = await authorize(request, context, "publish");
+    const denied = await authorize(request, context, "publish", route.packageName);
     if (denied !== null) return denied;
     return publishPackage(request, context, route.packageName);
   }
   if ((request.method === "GET" || request.method === "HEAD") && route.remainder.length <= 1) {
-    const denied = await authorize(request, context, "read");
+    const denied = await authorize(request, context, "read", route.packageName);
     if (denied !== null) return denied;
     const response = await readPackage(request, context, route.packageName, route.remainder[0]);
     return request.method === "HEAD"

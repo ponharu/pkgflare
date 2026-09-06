@@ -9,7 +9,7 @@ Deploy a scoped private npm registry to your own Cloudflare account.
 - Standard scoped package publish and install endpoints
 - Immutable tarballs in R2
 - Package metadata and mutable dist-tags in D1
-- Read and publish tokens stored as Cloudflare Secrets
+- Cloudflare Secret tokens and short-lived GitHub Actions OIDC authentication
 - Repeatable deployment through one `pkgflare deploy` command
 - npm-compatible metadata and tarball responses tested with npm, pnpm, Yarn Classic, and Bun
 
@@ -144,7 +144,47 @@ The `.npmrc` contains an environment variable reference and can be committed; th
 
 Yarn Berry and other clients are outside the tested compatibility baseline. pkgflare does not implement `npm login`, `npm adduser`, `npm unpublish`, `npm deprecate`, search, or the npm audit API. It is a scoped private registry, not a complete replacement for the public npm service.
 
-A read token can read every package in the registry. A publish token can also publish packages and change dist-tags across all configured scopes. Permissions are not restricted per package or scope; use separate registry deployments when readers or publishers need different trust boundaries.
+A Secret read token can read every package in the registry. A Secret publish token can also publish packages and change dist-tags across all configured scopes. Secret-token permissions are not restricted per package or scope; use GitHub OIDC package grants or separate registry deployments when publishers need narrower trust boundaries.
+
+GitHub Actions jobs can instead use short-lived OIDC tokens with per-package grants and no stored registry token. Configure the trusted repository IDs, owner ID, ref, workflow, permissions, and package names under `auth.githubOidc`, then request the configured audience in the job:
+
+```ts
+auth: {
+  provider: "secrets",
+  tokens: [
+    { binding: "PKGFLARE_READ_TOKEN", permissions: ["read"] },
+    { binding: "PKGFLARE_PUBLISH_TOKEN", permissions: ["publish"] },
+  ],
+  githubOidc: {
+    audience: "pkgflare://packages.example.com",
+    subjects: [{
+      repositoryId: "123456789",
+      repositoryOwnerId: "987654321",
+      ref: "refs/heads/main",
+      workflowRef: "acme/example/.github/workflows/publish.yml@refs/heads/main",
+      permissions: ["publish"],
+      packages: ["@acme/example"],
+    }],
+  },
+}
+```
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-node@v4
+    with:
+      node-version: 22
+  - run: npm ci
+  - name: Publish
+    run: NPM_TOKEN="$(npx pkgflare auth github --audience 'pkgflare://packages.example.com')" npm publish
+```
+
+The package repository's `.npmrc` still points its scope to pkgflare and references `${NPM_TOKEN}`. Use the same command with `npm ci` or another supported client for OIDC-authenticated reads. See [GitHub Actions OIDC](./docs/operations.md#github-actions-oidc) for reusable workflows, wildcard rules, and the security model.
 
 Versions are immutable. To promote or roll back an existing version, use the publish token with `npm dist-tag`:
 
@@ -159,11 +199,14 @@ The first command assumes `1.1.0` has already been published. Moving a tag affec
 
 ```text
 pkgflare deploy [--config <path>] [--secrets-file <path>] [--adopt-existing]
+pkgflare auth github --audience <audience>
 pkgflare init
 pkgflare token generate
 ```
 
 `token generate` creates a cryptographically random token locally and prints it once. pkgflare does not store, distribute, list, or revoke tokens.
+
+`auth github` requests a short-lived GitHub Actions OIDC JWT and writes only that JWT to standard output. It is intended for command substitution and fails outside the GitHub Actions OIDC environment.
 
 ## Publish consistency
 
