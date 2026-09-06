@@ -238,6 +238,29 @@ describe("registry authentication", () => {
 });
 
 describe("GitHub Actions OIDC authentication", () => {
+  it("authenticates in the Worker runtime without following JWKS redirects", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.redirect === "error") {
+        throw new TypeError("the Worker runtime does not implement redirect:error");
+      }
+      if (init?.redirect !== "manual") throw new Error("JWKS redirects must not be followed");
+      return new Response(JSON.stringify({ keys: [oidcJwk] }));
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    expect(await oidcDecision(await oidcToken())).toBeNull();
+
+    clearGitHubJwksCache();
+    request.mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/untrusted-jwks" },
+      }),
+    );
+    expect((await oidcDecision(await oidcToken()))?.status).toBe(503);
+    expect(log.mock.calls.flat().join(" ")).not.toContain("example.com");
+  });
+
   it("accepts a valid signed token and rejects trust-claim mismatches", async () => {
     mockGithubJwks();
     expect(await oidcDecision(await oidcToken())).toBeNull();
