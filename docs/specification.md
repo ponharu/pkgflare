@@ -24,9 +24,12 @@ The deployment repository contains `pkgflare.config.ts` and a package-manager lo
 - one or more allowed npm scopes
 - an optional Cloudflare account ID, required when Wrangler credentials expose multiple accounts
 - an optional custom hostname
-- Cloudflare Secret binding names and their `read` or `publish` permissions
+- optional Cloudflare Secret binding names with registry-wide `read` or `publish` permissions
+- optional GitHub OIDC audience and subject rules containing repository/owner IDs, ref, workflow, permissions, and allowed package patterns
 
-Secret values are never stored in configuration or deployment state. A `publish` token also grants read access. Every token applies to all packages in the registry; per-scope and per-package authorization are not supported.
+At least one Secret token or GitHub OIDC configuration is required. Secret values are never stored in configuration or deployment state. A `publish` grant also grants read access and dist-tag mutation. Secret tokens apply to all packages; OIDC subjects are restricted to their exact packages or configured scope wildcards.
+
+The normalized runtime configuration is rejected when its UTF-8 JSON representation exceeds the 5 KiB Cloudflare Worker variable limit.
 
 ## Deployment state and resources
 
@@ -82,7 +85,17 @@ Supported publish sizes depend on the deployment plan and request processing cos
 
 ## Authentication and rotation
 
-Every Registry operation requires a Bearer token. Tokens are compared against configured Cloudflare Secret bindings without logging request credentials. Missing bindings do not disable other valid bindings.
+Every Registry operation requires a Bearer token. Static tokens are compared against configured Cloudflare Secret bindings without logging request credentials. Missing bindings do not disable other valid bindings.
+
+When GitHub OIDC is configured, a non-Secret Bearer token may be a GitHub JWT. The Worker accepts only RS256 with JWT type, the fixed `https://token.actions.githubusercontent.com` issuer and fixed GitHub JWKS URL, the configured audience, required timing and identity claims, and a maximum issued age of ten minutes. It matches numeric repository and owner IDs, branch/tag ref, caller workflow, optional reusable workflow, permission, and package. Pull-request-related and merge-group events are rejected.
+
+Normal workflow rules require `job_workflow_ref` to be absent. Reusable workflow rules require it to match `jobWorkflowRef` in addition to matching the caller's `workflow_ref`. Exact matching is the default; a terminal `*` is the only pattern syntax. OIDC package grants are enforced before metadata, tarball, publish, and dist-tag handlers.
+
+GitHub keys are fetched under timeout and response-size/key-count limits, cached per isolate, and refreshed after a cooldown when an unknown key is encountered. Invalid signatures/claims fail with 403. JWKS retrieval and validation failures fail closed with 503. Tokens and claims are not included in diagnostics.
+
+`pkgflare auth github --audience <audience>` requests a JWT through the GitHub Actions OIDC environment and prints only the token. npm-compatible clients use it as `NPM_TOKEN`. The direct JWT design does not issue pkgflare sessions and is independent of npmjs.org Trusted Publishing and Cloudflare API authentication.
+
+Automated tests use locally generated signing keys and a mocked fixed GitHub JWKS response. A real GitHub-issued token and a deployed registry require a separate trusted-workflow acceptance run.
 
 Rotation uses overlapping bindings: add the new binding, deploy, register and distribute the new Secret, remove the old binding and deploy, then delete the old Secret. Both tokens work during the overlap; the removed token stops working after the second deployment.
 
@@ -110,5 +123,6 @@ v1 is accepted when automated tests demonstrate:
 8. consistent package metadata snapshots during publication
 9. overlapping-token rotation and missing-binding tolerance
 10. absence of credentials and package contents from diagnostics
+11. GitHub OIDC signature, issuer, audience, time, repository, owner, ref, normal/reusable workflow, event, permission, package, key rotation, and failure-closed checks
 
 Deployment acceptance should also exercise initial setup, repeat deployment, failure recovery, and large publishes on the intended Cloudflare account. Record the account plan, encoded request size, tarball size, CPU time, and result when assessing capacity.

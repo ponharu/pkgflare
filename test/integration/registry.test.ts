@@ -1,14 +1,21 @@
 import { env, exports } from "cloudflare:workers";
 import { applyD1Migrations } from "cloudflare:test";
 import { Buffer } from "node:buffer";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { exportJWK, generateKeyPair, SignJWT, type CryptoKey, type JWK } from "jose";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeConfig } from "../../src/config.js";
 import { authorize } from "../../src/runtime/auth.js";
+import { clearGitHubJwksCache } from "../../src/runtime/github-oidc.js";
 import { parsePublishRequest } from "../../src/runtime/publish-stream.js";
 import { publishPackage } from "../../src/runtime/publish.js";
 import type { RuntimeContext } from "../../src/runtime/types.js";
 
 const authorization = (token: string) => ({ authorization: `Bearer ${token}` });
 const registry = exports.default;
+const oidcIssuer = "https://token.actions.githubusercontent.com";
+const oidcAudience = "pkgflare://registry.example";
+let oidcPrivateKey: CryptoKey;
+let oidcJwk: JWK;
 
 interface Packument {
   "dist-tags": Record<string, string>;
@@ -69,16 +76,32 @@ async function publishRaw(name: string, body: string, chunkSize: number): Promis
   );
 }
 
-async function publish(name: string, version: string, bytes = new Uint8Array([31, 139, 8, 0])) {
+async function publish(
+  name: string,
+  version: string,
+  bytes = new Uint8Array([31, 139, 8, 0]),
+  token = "publish-secret",
+) {
   return registry.fetch(`https://registry.example/${encodeURIComponent(name)}`, {
     method: "PUT",
-    headers: { ...authorization("publish-secret"), "content-type": "application/json" },
+    headers: { ...authorization(token), "content-type": "application/json" },
     body: JSON.stringify(publishBody(name, version, bytes)),
   });
 }
 
 beforeAll(async () => {
   await applyD1Migrations(env.PKGFLARE_DB, env.TEST_MIGRATIONS);
+  const keyPair = await generateKeyPair("RS256", { extractable: true });
+  oidcPrivateKey = keyPair.privateKey;
+  oidcJwk = { ...(await exportJWK(keyPair.publicKey)), alg: "RS256", kid: "test-key", use: "sig" };
+});
+
+beforeEach(() => {
+  clearGitHubJwksCache();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -86,6 +109,76 @@ afterAll(async () => {
   if (objects.objects.length > 0)
     await env.PKGFLARE_BUCKET.delete(objects.objects.map((object) => object.key));
 });
+
+interface OidcClaims {
+  repository_id?: string;
+  repository_owner_id?: string;
+  ref?: string;
+  workflow_ref?: string;
+  job_workflow_ref?: string;
+  event_name?: string;
+  issuer?: string;
+  audience?: string;
+  expiresAt?: number;
+}
+
+async function oidcToken(
+  claims: OidcClaims = {},
+  privateKey: CryptoKey = oidcPrivateKey,
+  kid = "test-key",
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({
+    repository_id: claims.repository_id ?? "123456",
+    repository_owner_id: claims.repository_owner_id ?? "654321",
+    ref: claims.ref ?? "refs/heads/main",
+    workflow_ref:
+      claims.workflow_ref ?? "acme/example/.github/workflows/publish.yml@refs/heads/main",
+    ...(claims.job_workflow_ref === undefined ? {} : { job_workflow_ref: claims.job_workflow_ref }),
+    event_name: claims.event_name ?? "workflow_dispatch",
+  })
+    .setProtectedHeader({ alg: "RS256", kid, typ: "JWT" })
+    .setIssuer(claims.issuer ?? oidcIssuer)
+    .setAudience(claims.audience ?? oidcAudience)
+    .setSubject("repo:acme/example:ref:refs/heads/main")
+    .setJti(`test-${crypto.randomUUID()}`)
+    .setIssuedAt(now)
+    .setNotBefore(now - 5)
+    .setExpirationTime(claims.expiresAt ?? now + 300)
+    .sign(privateKey);
+}
+
+function mockGithubJwks(jwk: JWK = oidcJwk): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(
+    async () =>
+      new Response(JSON.stringify({ keys: [jwk] }), {
+        headers: { "content-type": "application/json" },
+      }),
+  );
+}
+
+function oidcContext(): RuntimeContext {
+  return {
+    requestId: "oidc-test",
+    config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG) as unknown),
+    env: env as unknown as RuntimeContext["env"],
+  };
+}
+
+async function oidcDecision(
+  token: string,
+  permission: "read" | "publish" = "publish",
+  packageName = "@acme/oidc-package",
+): Promise<Response | null> {
+  return authorize(
+    new Request("https://registry.example/-/ping", {
+      headers: authorization(token),
+    }),
+    oidcContext(),
+    permission,
+    packageName,
+  );
+}
 
 describe("registry authentication", () => {
   it("rejects missing credentials without disclosing configuration", async () => {
@@ -141,6 +234,145 @@ describe("registry authentication", () => {
     });
     expect((await authorize(oldToken, rotatingContext, "read"))?.status).toBe(403);
     expect(await authorize(newToken, rotatingContext, "read")).toBeNull();
+  });
+});
+
+describe("GitHub Actions OIDC authentication", () => {
+  it("accepts a valid signed token and rejects trust-claim mismatches", async () => {
+    mockGithubJwks();
+    expect(await oidcDecision(await oidcToken())).toBeNull();
+
+    const invalidClaims: OidcClaims[] = [
+      { issuer: "https://example.com" },
+      { audience: "pkgflare://other" },
+      { expiresAt: Math.floor(Date.now() / 1000) - 60 },
+      { repository_id: "999999" },
+      { repository_owner_id: "999999" },
+      { ref: "refs/heads/feature" },
+      { workflow_ref: "acme/example/.github/workflows/other.yml@refs/heads/main" },
+    ];
+    for (const claims of invalidClaims) {
+      expect((await oidcDecision(await oidcToken(claims)))?.status).toBe(403);
+    }
+
+    const otherKey = await generateKeyPair("RS256");
+    expect((await oidcDecision(await oidcToken({}, otherKey.privateKey)))?.status).toBe(403);
+  });
+
+  it("distinguishes normal and reusable workflows and rejects pull-request contexts", async () => {
+    mockGithubJwks();
+    const unexpectedReusable = await oidcToken({
+      job_workflow_ref: "acme/workflows/.github/workflows/npm-publish.yml@refs/heads/main",
+    });
+    expect((await oidcDecision(unexpectedReusable))?.status).toBe(403);
+
+    const reusable = await oidcToken({
+      repository_id: "333333",
+      workflow_ref: "acme/caller/.github/workflows/release.yml@refs/heads/main",
+      job_workflow_ref: "acme/workflows/.github/workflows/npm-publish.yml@refs/heads/main",
+    });
+    expect(await oidcDecision(reusable, "publish", "@acme/reusable-package")).toBeNull();
+
+    expect((await oidcDecision(await oidcToken({ event_name: "pull_request" })))?.status).toBe(403);
+    expect((await oidcDecision(await oidcToken({ event_name: "merge_group" })))?.status).toBe(403);
+  });
+
+  it("prevents permission escalation and access to another package", async () => {
+    mockGithubJwks();
+    const readOnly = await oidcToken({
+      repository_id: "222222",
+      workflow_ref: "acme/reader/.github/workflows/test.yml@refs/heads/main",
+    });
+    expect(await oidcDecision(readOnly, "read", "@acme/read-only")).toBeNull();
+    expect((await oidcDecision(readOnly, "publish", "@acme/read-only"))?.status).toBe(403);
+    expect((await oidcDecision(readOnly, "read", "@acme/oidc-package"))?.status).toBe(403);
+  });
+
+  it("uses the same package grant for publish, metadata, tarball, and dist-tags", async () => {
+    mockGithubJwks();
+    const token = await oidcToken();
+    const packageName = "@acme/oidc-package";
+    expect((await publish(packageName, "1.0.0", new Uint8Array([1, 2, 3]), token)).status).toBe(
+      201,
+    );
+
+    const metadata = await registry.fetch(
+      `https://registry.example/${encodeURIComponent(packageName)}`,
+      { headers: authorization(token) },
+    );
+    expect(metadata.status).toBe(200);
+    const packument = await metadata.json<Packument>();
+    const tarballUrl = packument.versions["1.0.0"]?.dist.tarball;
+    expect(tarballUrl).toBeDefined();
+    if (tarballUrl === undefined) throw new Error("OIDC package tarball URL is missing");
+    expect((await registry.fetch(tarballUrl, { headers: authorization(token) })).status).toBe(200);
+
+    const tagsUrl = `https://registry.example/-/package/${encodeURIComponent(packageName)}/dist-tags/latest`;
+    expect(
+      (
+        await registry.fetch(tagsUrl, {
+          method: "PUT",
+          headers: { ...authorization(token), "content-type": "application/json" },
+          body: JSON.stringify("1.0.0"),
+        })
+      ).status,
+    ).toBe(200);
+
+    const otherPackage = "@acme/not-authorized";
+    expect((await publish(otherPackage, "1.0.0", new Uint8Array([4]))).status).toBe(201);
+    expect(
+      (
+        await registry.fetch(`https://registry.example/${encodeURIComponent(otherPackage)}`, {
+          headers: authorization(token),
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it("caches keys, refreshes an unknown key after cooldown, and fails closed", async () => {
+    const secondKey = await generateKeyPair("RS256", { extractable: true });
+    const secondJwk = {
+      ...(await exportJWK(secondKey.publicKey)),
+      alg: "RS256",
+      kid: "rotated-key",
+      use: "sig",
+    };
+    let currentJwk = oidcJwk;
+    const request = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ keys: [currentJwk] })));
+    expect(await oidcDecision(await oidcToken())).toBeNull();
+    expect(await oidcDecision(await oidcToken())).toBeNull();
+    expect(request).toHaveBeenCalledTimes(1);
+
+    const rotatedToken = await oidcToken({}, secondKey.privateKey, "rotated-key");
+    currentJwk = secondJwk;
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + 31_000);
+    expect(await oidcDecision(rotatedToken)).toBeNull();
+    expect(request).toHaveBeenCalledTimes(2);
+
+    clearGitHubJwksCache();
+    request.mockImplementation(async () => new Response(null, { status: 503 }));
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await oidcDecision(await oidcToken()))?.status).toBe(503);
+    expect(log.mock.calls.flat().join(" ")).not.toContain("eyJ");
+  });
+
+  it("rejects an oversized JWKS response without reading it unbounded", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ keys: [oidcJwk], padding: "x".repeat(64 * 1024) })),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await oidcDecision(await oidcToken()))?.status).toBe(503);
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify({
+        level: "error",
+        requestId: "oidc-test",
+        operation: "github_oidc_jwks",
+        errorType: "GitHubOidcUnavailableError",
+      }),
+    );
   });
 });
 

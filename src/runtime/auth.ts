@@ -1,4 +1,6 @@
 import type { Permission } from "../config.js";
+import { logRegistryError } from "./diagnostics.js";
+import { authorizeGitHubOidc, GitHubOidcUnavailableError } from "./github-oidc.js";
 import { npmError } from "./response.js";
 import type { RuntimeContext } from "./types.js";
 
@@ -26,14 +28,20 @@ function grants(permissions: readonly Permission[], required: Permission): boole
   return permissions.includes("publish") || permissions.includes(required);
 }
 
+const maximumBearerTokenBytes = 16 * 1024;
+
 export async function authorize(
   request: Request,
   context: RuntimeContext,
   required: Permission,
+  packageName?: string,
 ): Promise<Response | null> {
   const candidate = bearerToken(request);
   if (candidate === null) {
     return npmError(401, "unauthorized", "authentication required");
+  }
+  if (candidate.length > maximumBearerTokenBytes) {
+    return npmError(403, "forbidden", `token does not grant ${required} access`);
   }
 
   const candidateDigest = await digest(candidate);
@@ -46,5 +54,17 @@ export async function authorize(
     authorized ||= matches && grants(token.permissions, required);
   }
 
-  return authorized ? null : npmError(403, "forbidden", `token does not grant ${required} access`);
+  if (authorized) return null;
+
+  try {
+    if (await authorizeGitHubOidc(candidate, context, required, packageName)) return null;
+  } catch (error) {
+    if (error instanceof GitHubOidcUnavailableError) {
+      logRegistryError(context.requestId, "github_oidc_jwks", error);
+      return npmError(503, "authentication_unavailable", "OIDC authentication is unavailable");
+    }
+    throw error;
+  }
+
+  return npmError(403, "forbidden", `token does not grant ${required} access`);
 }

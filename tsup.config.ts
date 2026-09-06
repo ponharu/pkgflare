@@ -21,7 +21,7 @@ export default defineConfig([
     entry: { worker: "src/worker.ts" },
     format: "esm",
     platform: "browser",
-    noExternal: ["semver"],
+    noExternal: ["jose", "semver"],
     sourcemap: true,
   },
 ]);
