@@ -103,6 +103,7 @@ githubOidc: {
     repositoryOwnerId: "987654321",
     ref: "refs/tags/v*",
     workflowRef: "acme/example/.github/workflows/publish.yml@refs/tags/v*",
+    jobWorkflowRef: "acme/example/.github/workflows/publish.yml@refs/tags/v*",
     permissions: ["publish"],
     packages: ["@acme/example"],
   }],
@@ -113,7 +114,9 @@ Repository and owner IDs are decimal GitHub IDs and remain the primary repositor
 
 The complete normalized registry configuration must fit Cloudflare's 5 KiB per-variable limit. pkgflare checks this before deployment; prefer a scope wildcard or another registry when a very large subject/package matrix would exceed it.
 
-For a normal workflow, omit `jobWorkflowRef`. A token containing `job_workflow_ref` will not match that rule. For a reusable workflow, set all of these independently:
+`jobWorkflowRef` is optional in the configuration, but omission is an explicit requirement that the token does not contain `job_workflow_ref`; it is not a wildcard. GitHub-issued tokens can include `job_workflow_ref` for jobs defined directly in a workflow. In that case, set `jobWorkflowRef` to that workflow's ref, which normally matches `workflowRef` as shown above. Omit it only for an execution environment whose tokens do not contain the claim.
+
+For a reusable workflow, set the caller and called workflow refs independently:
 
 - `repositoryId`, `repositoryOwnerId`, `ref`, and `workflowRef` identify and constrain the caller.
 - `jobWorkflowRef` identifies the called reusable workflow and its trusted ref.
