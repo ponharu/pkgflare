@@ -38,7 +38,8 @@ const runtimeConfig = {
           repositoryOwnerId: "654321",
           ref: "refs/heads/main",
           workflowRef: "acme/caller/.github/workflows/release.yml@refs/heads/main",
-          jobWorkflowRef: "acme/workflows/.github/workflows/npm-publish.yml@refs/heads/main",
+          jobWorkflowRef:
+            "acme/workflows/.github/workflows/npm-publish.yml@0123456789abcdef0123456789abcdef01234567",
           permissions: ["publish"],
           packages: ["@acme/reusable-package"],
         },

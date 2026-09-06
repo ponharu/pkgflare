@@ -269,7 +269,8 @@ describe("GitHub Actions OIDC authentication", () => {
     const reusable = await oidcToken({
       repository_id: "333333",
       workflow_ref: "acme/caller/.github/workflows/release.yml@refs/heads/main",
-      job_workflow_ref: "acme/workflows/.github/workflows/npm-publish.yml@refs/heads/main",
+      job_workflow_ref:
+        "acme/workflows/.github/workflows/npm-publish.yml@0123456789abcdef0123456789abcdef01234567",
     });
     expect(await oidcDecision(reusable, "publish", "@acme/reusable-package")).toBeNull();
 

@@ -13,6 +13,29 @@ const validConfig = {
   },
 };
 
+function normalizeJobWorkflowRef(jobWorkflowRef: string) {
+  return normalizeConfig({
+    ...validConfig,
+    auth: {
+      provider: "secrets",
+      githubOidc: {
+        audience: "pkgflare://registry",
+        subjects: [
+          {
+            repositoryId: "123456",
+            repositoryOwnerId: "654321",
+            ref: "refs/heads/main",
+            workflowRef: "acme/example/.github/workflows/publish.yml@refs/heads/main",
+            jobWorkflowRef,
+            permissions: ["publish"],
+            packages: ["@acme/example"],
+          },
+        ],
+      },
+    },
+  });
+}
+
 describe("normalizeConfig", () => {
   it("normalizes duplicate scopes and permissions", () => {
     const config = normalizeConfig({
@@ -62,6 +85,58 @@ describe("normalizeConfig", () => {
     expect(config.auth.githubOidc?.subjects[0]).toEqual(
       expect.objectContaining({ permissions: ["publish"], packages: ["@acme/example"] }),
     );
+  });
+
+  it("accepts a full commit SHA for a reusable workflow", () => {
+    const jobWorkflowRef =
+      "acme/workflows/.github/workflows/npm-publish.yml@0123456789abcdef0123456789abcdef01234567";
+    const config = normalizeJobWorkflowRef(jobWorkflowRef);
+
+    expect(config.auth.githubOidc?.subjects[0]?.jobWorkflowRef).toBe(jobWorkflowRef);
+  });
+
+  it.each(["refs/heads/main", "refs/tags/v1.2.3"])(
+    "continues to accept a reusable workflow at %s",
+    (ref) => {
+      const jobWorkflowRef = `acme/workflows/.github/workflows/npm-publish.yml@${ref}`;
+      expect(
+        normalizeJobWorkflowRef(jobWorkflowRef).auth.githubOidc?.subjects[0]?.jobWorkflowRef,
+      ).toBe(jobWorkflowRef);
+    },
+  );
+
+  it.each(["a".repeat(39), "g".repeat(40)])(
+    "rejects an invalid reusable workflow commit SHA: %s",
+    (sha) => {
+      expect(() =>
+        normalizeJobWorkflowRef(`acme/workflows/.github/workflows/npm-publish.yml@${sha}`),
+      ).toThrow("full commit SHA");
+    },
+  );
+
+  it("keeps caller workflowRef restricted to a branch or tag ref", () => {
+    expect(() =>
+      normalizeConfig({
+        ...validConfig,
+        auth: {
+          provider: "secrets",
+          githubOidc: {
+            audience: "pkgflare://registry",
+            subjects: [
+              {
+                repositoryId: "123456",
+                repositoryOwnerId: "654321",
+                ref: "refs/heads/main",
+                workflowRef:
+                  "acme/example/.github/workflows/publish.yml@0123456789abcdef0123456789abcdef01234567",
+                permissions: ["publish"],
+                packages: ["@acme/example"],
+              },
+            ],
+          },
+        },
+      }),
+    ).toThrow("workflowRef");
   });
 
   it.each([
