@@ -49,13 +49,15 @@ The Registry supports:
 
 - npm CouchDB-style package publish
 - complete package metadata and version metadata
-- immutable tarball GET and HEAD with byte ranges
+- immutable tarball GET and HEAD with single byte ranges and ETag-based conditional requests
 - dist-tag GET, PUT, and DELETE used by `npm dist-tag`
 - authenticated ping
 
 The login/adduser, unpublish, deprecate, search, and audit APIs are not implemented.
 
 Package versions are immutable. Dist-tags are independently mutable and may point to any existing version, enabling promotion and rollback without republishing bytes.
+
+Tarball GET supports closed, open-ended, and suffix byte ranges. Unsatisfiable ranges return 416 with `Content-Range: bytes */<size>`; malformed fields, unsupported range units, and multiple ranges are ignored with a full 200 response. HEAD ignores Range. `If-None-Match` uses weak ETag comparison, including lists and `*`, and is evaluated before Range. `If-Range` requires an exact strong ETag; weak validators, dates, and mismatches fall back to the full representation. Authorization is required before conditional responses.
 
 ## Streaming publish pipeline
 
