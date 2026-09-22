@@ -90,22 +90,50 @@ export async function readPackage(
   );
 }
 
-function contentRange(object: R2ObjectBody): { header: string; length: number } | null {
-  if (object.range === undefined) return null;
-  if ("offset" in object.range) {
-    const length = object.range.length ?? object.size - object.range.offset;
-    return {
-      header: `bytes ${String(object.range.offset)}-${String(object.range.offset + length - 1)}/${String(object.size)}`,
-      length,
-    };
+function byteRange(
+  value: string | null,
+  size: number,
+): { offset: number; length: number } | "unsatisfiable" | null {
+  if (value === null) return null;
+  // Unsupported multiple ranges and malformed fields are ignored, never sent to R2.
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(value.trim());
+  if (match === null || (match[1] === "" && match[2] === "")) return null;
+  const [, first = "", last = ""] = match;
+  const total = BigInt(size);
+  if (first === "") {
+    const suffix = BigInt(last);
+    const length = Number(suffix < total ? suffix : total);
+    return length === 0 ? "unsatisfiable" : { offset: size - length, length };
   }
-  if ("suffix" in object.range) {
-    return {
-      header: `bytes ${String(object.size - object.range.suffix)}-${String(object.size - 1)}/${String(object.size)}`,
-      length: object.range.suffix,
-    };
-  }
-  return null;
+  const start = BigInt(first);
+  const end = last === "" ? null : BigInt(last);
+  if (end !== null && end < start) return null;
+  if (start >= total) return "unsatisfiable";
+  const final = end !== null && end < total ? end : total - 1n;
+  return { offset: Number(start), length: Number(final - start + 1n) };
+}
+
+function matchesIfNoneMatch(value: string | null, etag: string): boolean {
+  if (value === null) return false;
+  if (value.trim() === "*") return true;
+  // Commas are legal inside opaque entity tags, so do not split the field on commas.
+  const entityTag = /(?:W\/)?"[\x21\x23-\x7e\x80-\xff]*"/g;
+  const list = new RegExp(
+    `^[\\t ]*(?:${entityTag.source})?(?:[\\t ]*,[\\t ]*(?:${entityTag.source})?)*[\\t ]*$`,
+  );
+  if (!list.test(value)) return false;
+  const tags = value.match(entityTag);
+  return tags?.some((tag) => tag.replace(/^W\//, "") === etag) ?? false;
+}
+
+function tarballHeaders(etag: string, integrity: string): Headers {
+  return new Headers({
+    "accept-ranges": "bytes",
+    "cache-control": "private, max-age=31536000, immutable",
+    "content-type": "application/octet-stream",
+    etag,
+    "x-pkgflare-integrity": integrity,
+  });
 }
 
 export async function readTarball(
@@ -127,40 +155,51 @@ export async function readTarball(
 
   const ifNoneMatch = request.headers.get("if-none-match");
   const range = request.headers.get("range");
-  const object =
-    request.method === "HEAD"
+  const ifRange = request.headers.get("if-range");
+  const isHead = request.method === "HEAD";
+  const metadata =
+    isHead || ifNoneMatch !== null || (range !== null && ifRange !== null)
       ? await context.env.PKGFLARE_BUCKET.head(row.tarball_key)
-      : await context.env.PKGFLARE_BUCKET.get(
-          row.tarball_key,
-          range === null ? {} : { range: request.headers },
-        );
+      : undefined;
+  if (metadata === null) {
+    return npmError(503, "storage_inconsistent", "published tarball is temporarily unavailable");
+  }
+  if (metadata !== undefined) {
+    const headers = tarballHeaders(metadata.httpEtag, row.integrity);
+    if (matchesIfNoneMatch(ifNoneMatch, metadata.httpEtag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    if (isHead) {
+      headers.set("content-length", String(row.tarball_size));
+      return new Response(null, { status: 200, headers });
+    }
+  }
+
+  // No Last-Modified validator is advertised, so date-based If-Range cannot match.
+  const selectedRange =
+    ifRange !== null && ifRange.trim() !== metadata?.httpEtag
+      ? null
+      : byteRange(range, row.tarball_size);
+  if (selectedRange === "unsatisfiable") {
+    const response = npmError(416, "range_not_satisfiable", "tarball range is not satisfiable");
+    response.headers.set("content-range", `bytes */${String(row.tarball_size)}`);
+    return response;
+  }
+  const object = await context.env.PKGFLARE_BUCKET.get(
+    row.tarball_key,
+    selectedRange === null ? {} : { range: selectedRange },
+  );
   if (object === null) {
     return npmError(503, "storage_inconsistent", "published tarball is temporarily unavailable");
   }
-
-  const headers = new Headers({
-    "accept-ranges": "bytes",
-    "cache-control": "private, max-age=31536000, immutable",
-    "content-type": "application/octet-stream",
-    etag: object.httpEtag,
-    "x-pkgflare-integrity": row.integrity,
-  });
-  if (ifNoneMatch === object.httpEtag && range === null) {
-    return new Response(null, { status: 304, headers });
+  const headers = tarballHeaders(object.httpEtag, row.integrity);
+  headers.set("content-length", String(selectedRange?.length ?? row.tarball_size));
+  if (selectedRange !== null) {
+    const { offset, length } = selectedRange;
+    headers.set(
+      "content-range",
+      `bytes ${String(offset)}-${String(offset + length - 1)}/${String(row.tarball_size)}`,
+    );
   }
-
-  if (request.method === "HEAD") {
-    headers.set("content-length", String(row.tarball_size));
-    return new Response(null, { status: 200, headers });
-  }
-
-  const body = object as R2ObjectBody;
-  const rangeHeader = range === null ? null : contentRange(body);
-  if (rangeHeader !== null) {
-    headers.set("content-range", rangeHeader.header);
-    headers.set("content-length", String(rangeHeader.length));
-  } else {
-    headers.set("content-length", String(row.tarball_size));
-  }
-  return new Response(body.body, { status: rangeHeader === null ? 200 : 206, headers });
+  return new Response(object.body, { status: selectedRange === null ? 200 : 206, headers });
 }

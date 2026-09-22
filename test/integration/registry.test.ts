@@ -513,6 +513,107 @@ describe("publish and install protocol", () => {
     expect((await selected.json<{ version: string }>()).version).toBe("1.0.0");
   });
 
+  it("normalizes byte ranges and rejects unsatisfiable ranges", async () => {
+    const bytes = new Uint8Array([31, 139, 8, 0, 1, 2, 3, 4]);
+    expect((await publish("@acme/ranges", "1.0.0", bytes)).status).toBe(201);
+    const url = "https://registry.example/@acme/ranges/-/ranges-1.0.0.tgz";
+    for (const [range, start, end] of [
+      ["bytes=2-4", 2, 5],
+      ["bytes=5-", 5, 8],
+      ["bytes=-3", 5, 8],
+      ["bytes=-100", 0, 8],
+      ["bytes=2-99999999999999999999", 2, 8],
+    ] as const) {
+      const response = await registry.fetch(url, {
+        headers: { ...authorization("read-secret"), range },
+      });
+      expect(response.status, range).toBe(206);
+      expect(response.headers.get("content-range")).toBe(`bytes ${start}-${end - 1}/8`);
+      expect(response.headers.get("content-length")).toBe(String(end - start));
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes.slice(start, end));
+    }
+    for (const range of ["bytes=8-", "bytes=100-200", "bytes=-0", "bytes=99999999999999999999-"]) {
+      const response = await registry.fetch(url, {
+        headers: { ...authorization("read-secret"), range },
+      });
+      expect(response.status, range).toBe(416);
+      expect(response.headers.get("content-range")).toBe("bytes */8");
+      await response.text();
+    }
+    for (const range of ["bytes=5-2", "bytes=-", "not-a-range", "items=0-1", "bytes=0-1,4-5"]) {
+      const response = await registry.fetch(url, {
+        headers: { ...authorization("read-secret"), range },
+      });
+      expect(response.status, range).toBe(200);
+      expect(response.headers.get("content-range")).toBeNull();
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    }
+    const head = await registry.fetch(url, {
+      method: "HEAD",
+      headers: { ...authorization("read-secret"), range: "bytes=100-200" },
+    });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe("8");
+    expect(head.headers.get("content-range")).toBeNull();
+    expect(await head.text()).toBe("");
+  });
+
+  it("evaluates conditional requests before ranges without bypassing authentication", async () => {
+    expect((await publish("@acme/conditional", "1.0.0")).status).toBe(201);
+    const url = "https://registry.example/@acme/conditional/-/conditional-1.0.0.tgz";
+    const initial = await registry.fetch(url, {
+      method: "HEAD",
+      headers: authorization("read-secret"),
+    });
+    const etag = initial.headers.get("etag");
+    expect(etag).toBeTruthy();
+    for (const method of ["GET", "HEAD"]) {
+      for (const validator of [etag!, "*", `W/${etag}`, `"other,tag", W/${etag}`]) {
+        const response = await registry.fetch(url, {
+          method,
+          headers: {
+            ...authorization("read-secret"),
+            "if-none-match": validator,
+            range: "bytes=100-200",
+          },
+        });
+        expect(response.status, validator).toBe(304);
+        expect(response.headers.get("etag")).toBe(etag);
+        expect(response.headers.get("cache-control")).toContain("private");
+        expect(response.headers.get("content-range")).toBeNull();
+        expect(await response.text()).toBe("");
+      }
+    }
+    for (const validator of ['"other"', `invalid ${etag}`, `"other"${etag}`]) {
+      const response = await registry.fetch(url, {
+        headers: { ...authorization("read-secret"), "if-none-match": validator },
+      });
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+    }
+    expect((await registry.fetch(url, { headers: { "if-none-match": "*" } })).status).toBe(401);
+  });
+
+  it("uses ranges only when If-Range strongly matches the current tarball", async () => {
+    expect((await publish("@acme/if-range", "1.0.0")).status).toBe(201);
+    const url = "https://registry.example/@acme/if-range/-/if-range-1.0.0.tgz";
+    const initial = await registry.fetch(url, {
+      method: "HEAD",
+      headers: authorization("read-secret"),
+    });
+    const etag = initial.headers.get("etag");
+    expect(etag).toBeTruthy();
+    for (const validator of [etag!, `W/${etag}`, '"other"', "Wed, 01 Jan 2020 00:00:00 GMT"]) {
+      const response = await registry.fetch(url, {
+        headers: { ...authorization("read-secret"), range: "bytes=1-2", "if-range": validator },
+      });
+      expect(response.status).toBe(validator === etag ? 206 : 200);
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+        validator === etag ? new Uint8Array([139, 8]) : new Uint8Array([31, 139, 8, 0]),
+      );
+    }
+  });
+
   it("rejects a second publish of the same version", async () => {
     expect((await publish("@acme/immutable", "1.0.0", new Uint8Array([1]))).status).toBe(201);
     const repeated = await publish("@acme/immutable", "1.0.0", new Uint8Array([2]));
