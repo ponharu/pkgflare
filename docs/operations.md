@@ -135,7 +135,7 @@ Set `jobWorkflowRef` to a full commit SHA instead when the registry policy must 
 
 OIDC requests from `pull_request`, `pull_request_target`, related pull-request events, and merge queues are rejected even if another claim pattern would match. Use a trusted branch, tag, or manually dispatched workflow. A `publish` grant includes reads and dist-tag changes only for its allowed packages; a `read` grant cannot publish or change tags. Metadata and tarball reads apply the same package grant.
 
-The job needs `id-token: write`. Keep a normal scope-specific `.npmrc` with `${NPM_TOKEN}`, then obtain the JWT through command substitution so it is not printed:
+The job needs `id-token: write`. Keep a normal scope-specific `.npmrc` with `${NPM_TOKEN}`. Bootstrap the explicitly named public CLI before installing project dependencies, then obtain the JWT through command substitution so it is not printed:
 
 ```yaml
 permissions:
@@ -147,12 +147,25 @@ steps:
   - uses: actions/setup-node@v4
     with:
       node-version: 22
-  - run: npm ci
+  - name: Install dependencies
+    run: |
+      set -eu
+      NPM_TOKEN="$(npm exec --yes --ignore-scripts --registry=https://registry.npmjs.org --package=@ponharu/pkgflare@1.2.0 -- pkgflare auth github --audience 'pkgflare://packages.example.com')"
+      export NPM_TOKEN
+      npm ci
   - name: Publish package
-    run: NPM_TOKEN="$(npx pkgflare auth github --audience 'pkgflare://packages.example.com')" npm publish
+    run: |
+      set -eu
+      NPM_TOKEN="$(npm exec --yes --ignore-scripts --registry=https://registry.npmjs.org --package=@ponharu/pkgflare@1.2.0 -- pkgflare auth github --audience 'pkgflare://packages.example.com')"
+      export NPM_TOKEN
+      npm publish
 ```
 
-For read-only CI, grant `permissions: ["read"]` and run the same token command with `npm ci`, pnpm, Yarn Classic, or Bun. Never echo the command result or enable shell tracing around it.
+`--package=@ponharu/pkgflare@1.2.0` identifies the scoped package and a fixed version even in a clean checkout. Update the version pin deliberately when upgrading. `--ignore-scripts` applies to CLI bootstrapping; the subsequent project installation retains its normal script behavior. Do not invoke bare `npx pkgflare` before installing the CLI: npm can resolve the unscoped package name instead.
+
+An alternative after project dependencies are available is to add `@ponharu/pkgflare` as an exact development dependency, commit the lockfile, and run its local binary with `npm exec --no -- pkgflare auth github --audience 'pkgflare://packages.example.com'`. This alone cannot bootstrap an initial `npm ci` that needs private packages; use the explicit package command above for that first authentication.
+
+Grant the installation step access to every private dependency it needs. For read-only CI, grant `permissions: ["read"]`, omit the publish step, and use `npm ci`, pnpm, Yarn Classic, or Bun after exporting the token. Request a fresh token before publication because dependency installation can outlast the previous token. Keep token assignment separate from `export` and the package command so `set -e` stops the step on authentication failure. Never echo the command result or enable shell tracing around it.
 
 The JWT is a Bearer credential and can be replayed until it expires. Request it immediately before the package command, do not persist it in files or job outputs, and keep untrusted scripts out of the authenticated step.
 

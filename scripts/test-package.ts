@@ -48,6 +48,27 @@ try {
     join(projectDirectory, "package.json"),
     `${JSON.stringify({ name: "pkgflare-package-test", private: true }, null, 2)}\n`,
   );
+  await command(
+    "npm",
+    [
+      "exec",
+      "--yes",
+      "--ignore-scripts",
+      "--registry=https://registry.npmjs.org",
+      "--cache",
+      join(temporaryDirectory, "bootstrap-cache"),
+      `--package=${archive}`,
+      "--",
+      "pkgflare",
+      "auth",
+      "github",
+      "--help",
+    ],
+    { cwd: projectDirectory },
+  );
+  if ((await readdir(projectDirectory)).includes("node_modules")) {
+    throw new Error("CLI bootstrap unexpectedly installed project dependencies");
+  }
   await command("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", archive], {
     cwd: projectDirectory,
     silent: true,

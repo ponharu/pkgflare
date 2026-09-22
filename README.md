@@ -180,12 +180,23 @@ steps:
   - uses: actions/setup-node@v4
     with:
       node-version: 22
-  - run: npm ci
+  - name: Install dependencies
+    run: |
+      set -eu
+      NPM_TOKEN="$(npm exec --yes --ignore-scripts --registry=https://registry.npmjs.org --package=@ponharu/pkgflare@1.2.0 -- pkgflare auth github --audience 'pkgflare://packages.example.com')"
+      export NPM_TOKEN
+      npm ci
   - name: Publish
-    run: NPM_TOKEN="$(npx pkgflare auth github --audience 'pkgflare://packages.example.com')" npm publish
+    run: |
+      set -eu
+      NPM_TOKEN="$(npm exec --yes --ignore-scripts --registry=https://registry.npmjs.org --package=@ponharu/pkgflare@1.2.0 -- pkgflare auth github --audience 'pkgflare://packages.example.com')"
+      export NPM_TOKEN
+      npm publish
 ```
 
-The package repository's `.npmrc` still points its scope to pkgflare and references `${NPM_TOKEN}`. Use the same command with `npm ci` or another supported client for OIDC-authenticated reads. The `@*` rule fixes the exact job workflow identity while allowing its valid Git ref or full commit SHA to change. See [GitHub Actions OIDC](./docs/operations.md#github-actions-oidc) for reusable workflows, stricter ref rules, and the security model.
+The explicit `--package` selects the published `@ponharu/pkgflare` CLI before project dependencies are installed. The example pins version `1.2.0`; update that pin deliberately when upgrading. A bare `npx pkgflare` requires an already installed local CLI and can otherwise resolve the unrelated unscoped package name.
+
+The package repository's `.npmrc` still points its scope to pkgflare and references `${NPM_TOKEN}`. Grant access to every private dependency needed by the installation step; the example subject grants only `@acme/example`. Each step requests a fresh token, and a failed token request stops the step before the package command. For read-only CI, grant `read` permission and omit publication. The `@*` rule fixes the exact job workflow identity while allowing its valid Git ref or full commit SHA to change. See [GitHub Actions OIDC](./docs/operations.md#github-actions-oidc) for reusable workflows, stricter ref rules, and the security model.
 
 Versions are immutable. To promote or roll back an existing version, use the publish token with `npm dist-tag`:
 
