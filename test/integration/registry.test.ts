@@ -745,6 +745,73 @@ describe("publish and install protocol", () => {
     expect(semverTag.status).toBe(400);
   });
 
+  it.each(["1.0.0", "v1.4", "1.x", "x", "*", "bad tag"])(
+    "rejects the same invalid dist-tag %s during publication and mutation",
+    async (tag) => {
+      const name = `@acme/invalid-tag-${crypto.randomUUID()}`;
+      const document = publishBody(name, "1.0.0", new Uint8Array([1, 2, 3]));
+      document["dist-tags"] = { latest: "1.0.0", [tag]: "1.0.0" };
+      const response = await publishRaw(name, JSON.stringify(document), 64);
+      expect(response.status).toBe(400);
+      const metadata = await registry.fetch(
+        `https://registry.example/${encodeURIComponent(name)}`,
+        { headers: authorization("read-secret") },
+      );
+      expect(metadata.status).toBe(404);
+      const objects = await env.PKGFLARE_BUCKET.list({
+        prefix: `packages/${encodeURIComponent(name)}/`,
+      });
+      expect(objects.objects).toHaveLength(0);
+      for (const method of ["PUT", "DELETE"]) {
+        const changed = await registry.fetch(
+          `https://registry.example/-/package/${encodeURIComponent(name)}/dist-tags/${encodeURIComponent(tag)}`,
+          {
+            method,
+            headers: authorization("publish-secret"),
+            ...(method === "PUT" ? { body: JSON.stringify("1.0.0") } : {}),
+          },
+        );
+        expect(changed.status).toBe(400);
+      }
+      expect((await publish(name, "1.0.0")).status).toBe(201);
+    },
+  );
+
+  it("publishes and mutates ordinary tags targeting a prerelease version", async () => {
+    const name = "@acme/prerelease-tags";
+    const version = "1.0.0-beta.1";
+    const document = publishBody(name, version, new Uint8Array([1, 2, 3]));
+    const tags = { beta: version, next: version, "release-candidate": version };
+    document["dist-tags"] = tags;
+    expect((await publishRaw(name, JSON.stringify(document), 64)).status).toBe(201);
+    const url = `https://registry.example/-/package/${encodeURIComponent(name)}/dist-tags`;
+    expect(
+      await (await registry.fetch(url, { headers: authorization("read-secret") })).json(),
+    ).toEqual(tags);
+    for (const tag of Object.keys(tags)) {
+      expect(
+        (
+          await registry.fetch(`${url}/${tag}`, {
+            method: "PUT",
+            headers: authorization("publish-secret"),
+            body: JSON.stringify(version),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await registry.fetch(`${url}/${tag}`, {
+            method: "DELETE",
+            headers: authorization("publish-secret"),
+          })
+        ).status,
+      ).toBe(200);
+    }
+    expect(
+      await (await registry.fetch(url, { headers: authorization("read-secret") })).json(),
+    ).toEqual({});
+  });
+
   it("streams property-order-independent and escaped attachment data across chunk boundaries", async () => {
     for (const chunkSize of [1, 2, 3, 7, 64]) {
       const name = `@acme/chunk-${String(chunkSize)}`;
