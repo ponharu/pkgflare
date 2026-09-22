@@ -48,7 +48,7 @@ v1 accepts scoped names up to 214 characters. Scope segments contain lowercase l
 The Registry supports:
 
 - npm CouchDB-style package publish
-- complete package metadata and version metadata
+- complete package metadata, abbreviated installation metadata, and version metadata
 - immutable tarball GET and HEAD with single byte ranges and ETag-based conditional requests
 - dist-tag GET, PUT, and DELETE used by `npm dist-tag`
 - authenticated ping
@@ -103,7 +103,11 @@ Rotation uses overlapping bindings: add the new binding, deploy, register and di
 
 ## Consistent reads
 
-D1 is the visibility boundary. Package metadata reads obtain versions and dist-tags in one D1 batch so a publish cannot produce a response combining two different snapshots. A tarball is returned only when referenced by a committed version row. A missing referenced object produces a retryable storage-consistency response.
+D1 is the visibility boundary. Package metadata reads obtain versions, dist-tags, and package timestamps in one D1 batch so a publish or tag update cannot produce a response combining different snapshots. Tag mutations update the package modification timestamp in the same transaction. A tarball is returned only when referenced by a committed version row. A missing referenced object produces a retryable storage-consistency response.
+
+Package metadata defaults to complete JSON. An explicit `Accept: application/vnd.npm.install-v1+json` preference selects abbreviated metadata when its quality is positive and at least as high as the full JSON alternative. Explicit exclusions and more specific media ranges take precedence over wildcards. Unsupported preferences fall back to full JSON. Both representations use `Vary: Accept` and `Cache-Control: private, no-store`; version and tag selector URLs always return the complete selected manifest.
+
+Abbreviated metadata contains `name`, `modified`, `dist-tags`, and `versions`. Version entries preserve npm installation fields, including dependency relationships, bundled dependencies, executable mappings, engines, operating systems, CPU architectures, libc constraints, shrinkwrap information, funding, deprecation notices, and verified distribution metadata. `hasInstallScript` reflects declared installation lifecycle scripts, native gyp builds, or an existing affirmative indicator. D1 projects the stored JSON before returning it to the Worker, omitting descriptions, readmes, and unrelated custom fields. Existing versions require no migration or republishing.
 
 ## Diagnostics and privacy
 

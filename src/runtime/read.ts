@@ -1,4 +1,9 @@
 import { isAllowedPackage } from "./package-name.js";
+import {
+  installManifestSql,
+  installMediaType,
+  prefersInstallMetadata,
+} from "./install-metadata.js";
 import { json, npmError } from "./response.js";
 import type {
   DistTagRow,
@@ -34,16 +39,32 @@ function publicManifest(
 async function packageRows(
   context: RuntimeContext,
   packageName: string,
-): Promise<{ versions: StoredVersionRow[]; tags: DistTagRow[] }> {
-  const [versionsResult, tagsResult] = (await context.env.PKGFLARE_DB.batch([
+  abbreviated: boolean,
+): Promise<{
+  versions: StoredVersionRow[];
+  tags: DistTagRow[];
+  times: { created_at: string; updated_at: string } | undefined;
+}> {
+  const [versionsResult, tagsResult, packageResult] = (await context.env.PKGFLARE_DB.batch([
     context.env.PKGFLARE_DB.prepare(
-      "SELECT version, manifest_json, tarball_file, shasum, integrity, published_at FROM versions WHERE package_name = ?1 ORDER BY published_at",
+      `SELECT version, ${abbreviated ? installManifestSql : "manifest_json"} AS manifest_json, tarball_file, shasum, integrity, published_at FROM versions WHERE package_name = ?1 ORDER BY published_at`,
     ).bind(packageName),
     context.env.PKGFLARE_DB.prepare(
       "SELECT tag, version FROM dist_tags WHERE package_name = ?1 ORDER BY tag",
     ).bind(packageName),
-  ])) as [D1Result<StoredVersionRow>, D1Result<DistTagRow>];
-  return { versions: versionsResult.results ?? [], tags: tagsResult.results ?? [] };
+    context.env.PKGFLARE_DB.prepare(
+      "SELECT created_at, updated_at FROM packages WHERE name = ?1",
+    ).bind(packageName),
+  ])) as [
+    D1Result<StoredVersionRow>,
+    D1Result<DistTagRow>,
+    D1Result<{ created_at: string; updated_at: string }>,
+  ];
+  return {
+    versions: versionsResult.results ?? [],
+    tags: tagsResult.results ?? [],
+    times: packageResult.results[0],
+  };
 }
 
 export async function readPackage(
@@ -70,13 +91,24 @@ export async function readPackage(
         });
   }
 
-  const { versions, tags } = await packageRows(context, packageName);
+  const abbreviated = prefersInstallMetadata(request.headers.get("accept"));
+  const { versions, tags, times } = await packageRows(context, packageName, abbreviated);
   if (versions.length === 0) return npmError(404, "not_found", "package not found");
 
   const manifests = Object.fromEntries(
     versions.map((row) => [row.version, publicManifest(request, packageName, row)]),
   );
   const distTags = Object.fromEntries(tags.map((row) => [row.tag, row.version]));
+  const modified = times?.updated_at ?? versions.at(-1)?.published_at;
+  const headers = { "cache-control": "private, no-store", vary: "Accept" };
+  if (abbreviated) {
+    const response = json(
+      { name: packageName, modified, "dist-tags": distTags, versions: manifests },
+      { headers },
+    );
+    response.headers.set("content-type", `${installMediaType}; charset=utf-8`);
+    return response;
+  }
   const publishedTimes = Object.fromEntries(versions.map((row) => [row.version, row.published_at]));
   return json(
     {
@@ -85,12 +117,12 @@ export async function readPackage(
       "dist-tags": distTags,
       versions: manifests,
       time: {
-        created: versions[0]?.published_at,
-        modified: versions.at(-1)?.published_at,
+        created: times?.created_at ?? versions[0]?.published_at,
+        modified,
         ...publishedTimes,
       },
     },
-    { headers: { "cache-control": "private, no-store" } },
+    { headers },
   );
 }
 

@@ -12,6 +12,7 @@ Deploy a scoped private npm registry to your own Cloudflare account.
 - Cloudflare Secret tokens and short-lived GitHub Actions OIDC authentication
 - Repeatable deployment through one `pkgflare deploy` command
 - npm-compatible metadata and tarball responses tested with npm, pnpm, Yarn Classic, and Bun
+- Lightweight installation metadata with dependency, executable, and platform information
 
 It intentionally does not provide a web UI, npmjs.org proxy, user database, team model, or a hosted registry service.
 
