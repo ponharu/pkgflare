@@ -1,15 +1,26 @@
 import { randomBytes } from "node:crypto";
 import { open } from "node:fs/promises";
 import { relative, resolve } from "node:path";
+import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { deploy } from "./cli/deploy.js";
 import { requestGithubOidcToken } from "./cli/github-oidc.js";
 
-function valueAfter(arguments_: readonly string[], flag: string): string | undefined {
-  const index = arguments_.indexOf(flag);
-  if (index === -1) return undefined;
-  const value = arguments_[index + 1];
-  if (value === undefined || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
+function parseOptions<T extends ParseArgsOptionsConfig>(args: string[], options: T) {
+  const parsed = parseArgs({
+    args,
+    options: { ...options, help: { type: "boolean", short: "h" } },
+    strict: true,
+    allowPositionals: false,
+    tokens: true,
+  });
+  const seen = new Set<string>();
+  for (const token of parsed.tokens) {
+    if (token.kind !== "option") continue;
+    if (seen.has(token.name)) throw new Error(`option --${token.name} may only be specified once`);
+    if (token.value === "") throw new Error(`--${token.name} requires a non-empty value`);
+    seen.add(token.name);
+  }
+  return parsed.values;
 }
 
 function help(): void {
@@ -35,13 +46,20 @@ async function init(cwd: string): Promise<void> {
 async function main(arguments_: string[]): Promise<void> {
   const [command, subcommand] = arguments_;
   if (command === undefined || command === "--help" || command === "-h") {
+    parseOptions(arguments_, {});
     help();
     return;
   }
   if (command === "deploy") {
-    const configFile = valueAfter(arguments_, "--config");
-    const secretsFile = valueAfter(arguments_, "--secrets-file");
-    const adoptExisting = arguments_.includes("--adopt-existing");
+    const options = parseOptions(arguments_.slice(1), {
+      config: { type: "string" },
+      "secrets-file": { type: "string" },
+      "adopt-existing": { type: "boolean" },
+    });
+    if (options.help) return help();
+    const configFile = options.config;
+    const secretsFile = options["secrets-file"];
+    const adoptExisting = options["adopt-existing"] ?? false;
     const result = await deploy({
       cwd: process.cwd(),
       ...(configFile === undefined ? {} : { configFile }),
@@ -68,20 +86,31 @@ async function main(arguments_: string[]): Promise<void> {
     return;
   }
   if (command === "init") {
+    const options = parseOptions(arguments_.slice(1), {});
+    if (options.help) return help();
     await init(process.cwd());
     return;
   }
   if (command === "auth" && subcommand === "github") {
-    const token = await requestGithubOidcToken(valueAfter(arguments_, "--audience"));
+    const options = parseOptions(arguments_.slice(2), { audience: { type: "string" } });
+    if (options.help) return help();
+    const token = await requestGithubOidcToken(options.audience);
     process.stdout.write(`${token}\n`);
     return;
   }
   if (command === "token" && subcommand === "generate") {
+    const options = parseOptions(arguments_.slice(2), {});
+    if (options.help) return help();
     let binary = "";
     for (const byte of randomBytes(32)) binary += String.fromCharCode(byte);
     const token = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     process.stdout.write(`${token}\n`);
     return;
+  }
+  if (command === "auth" || command === "token") {
+    const options = parseOptions(arguments_.slice(1), {});
+    if (options.help) return help();
+    throw new Error(`${command} requires a subcommand`);
   }
   throw new Error(`unknown command: ${arguments_.join(" ")}`);
 }

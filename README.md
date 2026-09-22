@@ -205,6 +205,8 @@ pkgflare init
 pkgflare token generate
 ```
 
+Add `--help` or `-h` to any command to display usage without executing it. Unknown options, extra arguments, repeated options, and missing option values are rejected before command execution. `deploy` does not support `--dry-run`.
+
 `token generate` creates a cryptographically random token locally and prints it once. pkgflare does not store, distribute, list, or revoke tokens.
 
 `auth github` requests a short-lived GitHub Actions OIDC JWT and writes only that JWT to standard output. It is intended for command substitution and fails outside the GitHub Actions OIDC environment.
