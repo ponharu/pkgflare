@@ -82,14 +82,37 @@ async function availablePort(): Promise<number> {
 
 async function writePackage(directory: string, name: string, version = "1.0.0"): Promise<void> {
   await mkdir(directory, { recursive: true });
+  const isDependency = name === "@acme/dependency";
   await writeFile(
     join(directory, "package.json"),
-    `${JSON.stringify({ name, version, type: "module", main: "index.js" }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name,
+        version,
+        type: "module",
+        main: "index.js",
+        ...(!isDependency
+          ? {
+              dependencies: { "@acme/dependency": "^1.0.0" },
+              bin: { [`pkgflare-${name.slice(name.indexOf("/") + 1)}`]: "cli.js" },
+            }
+          : {}),
+      },
+      null,
+      2,
+    )}\n`,
   );
   await writeFile(
     join(directory, "index.js"),
     `export const client = ${JSON.stringify(name)};\nexport const version = ${JSON.stringify(version)};\n`,
   );
+  if (!isDependency) {
+    await writeFile(
+      join(directory, "cli.js"),
+      '#!/usr/bin/env node\nimport { version } from "@acme/dependency";\nconsole.log(version);\n',
+      { mode: 0o755 },
+    );
+  }
 }
 
 async function waitForRegistry(url: string): Promise<void> {
@@ -189,9 +212,11 @@ try {
 
   const npmPackage = join(temporaryDirectory, "npm-package");
   const bunPackage = join(temporaryDirectory, "bun-package");
+  const dependencyPackage = join(temporaryDirectory, "dependency-package");
   await Promise.all([
     writePackage(npmPackage, "@acme/npm-client"),
     writePackage(bunPackage, "@acme/bun-client"),
+    writePackage(dependencyPackage, "@acme/dependency"),
   ]);
   const npmrc = join(temporaryDirectory, ".npmrc");
   const npmrcContents = `@acme:registry=${registryUrl}\n//127.0.0.1:${String(port)}/:_authToken=\${NPM_TOKEN}\n`;
@@ -202,6 +227,10 @@ try {
     npm_config_userconfig: npmrc,
   };
 
+  await run("npm", ["publish", "--registry", registryUrl], {
+    cwd: dependencyPackage,
+    env: publishEnvironment,
+  });
   await run("npm", ["publish", "--registry", registryUrl], {
     cwd: npmPackage,
     env: publishEnvironment,
@@ -276,6 +305,15 @@ try {
       env: cacheEnvironment,
     });
     await verifyInstalled(directory, packageNames);
+    for (const binary of ["pkgflare-npm-client", "pkgflare-bun-client"]) {
+      const result = await run(join(directory, "node_modules", ".bin", binary), [], {
+        cwd: directory,
+        env: cacheEnvironment,
+        capture: true,
+      });
+      if (result.trim() !== "1.0.0")
+        throw new Error(`${client} did not resolve the executable's dependency`);
+    }
     process.stdout.write(`Verified ${client} install\n`);
   }
 } finally {

@@ -85,12 +85,15 @@ export async function setDistTag(
   if (typeof version !== "string" || validVersion(version, { loose: false }) !== version) {
     return npmError(400, "bad_request", "dist-tag target must be a valid strict semver version");
   }
-  const result = await context.env.PKGFLARE_DB.prepare(
-    "INSERT INTO dist_tags (package_name, tag, version) SELECT package_name, ?3, version FROM versions WHERE package_name = ?1 AND version = ?2 ON CONFLICT(package_name, tag) DO UPDATE SET version = excluded.version",
-  )
-    .bind(packageName, version, tag)
-    .run();
-  if (result.meta.changes === 0) {
+  const [result] = await context.env.PKGFLARE_DB.batch([
+    context.env.PKGFLARE_DB.prepare(
+      "INSERT INTO dist_tags (package_name, tag, version) SELECT package_name, ?3, version FROM versions WHERE package_name = ?1 AND version = ?2 ON CONFLICT(package_name, tag) DO UPDATE SET version = excluded.version",
+    ).bind(packageName, version, tag),
+    context.env.PKGFLARE_DB.prepare(
+      "UPDATE packages SET updated_at = ?3 WHERE name = ?1 AND EXISTS (SELECT 1 FROM versions WHERE package_name = ?1 AND version = ?2)",
+    ).bind(packageName, version, new Date().toISOString()),
+  ]);
+  if (result?.meta.changes === 0) {
     return npmError(404, "not_found", "package version not found");
   }
   return json({ ok: true });
@@ -105,12 +108,15 @@ export async function deleteDistTag(
     return npmError(404, "not_found", "package not found");
   }
   if (!isValidDistTag(tag)) return npmError(400, "bad_request", "dist-tag is invalid");
-  const result = await context.env.PKGFLARE_DB.prepare(
-    "DELETE FROM dist_tags WHERE package_name = ?1 AND tag = ?2",
-  )
-    .bind(packageName, tag)
-    .run();
-  return result.meta.changes === 0
+  const [, result] = await context.env.PKGFLARE_DB.batch([
+    context.env.PKGFLARE_DB.prepare(
+      "UPDATE packages SET updated_at = ?3 WHERE name = ?1 AND EXISTS (SELECT 1 FROM dist_tags WHERE package_name = ?1 AND tag = ?2)",
+    ).bind(packageName, tag, new Date().toISOString()),
+    context.env.PKGFLARE_DB.prepare(
+      "DELETE FROM dist_tags WHERE package_name = ?1 AND tag = ?2",
+    ).bind(packageName, tag),
+  ]);
+  return result?.meta.changes === 0
     ? npmError(404, "not_found", "dist-tag not found")
     : json({ ok: true });
 }

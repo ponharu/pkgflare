@@ -12,6 +12,8 @@ If the D1 result is uncertain, read-back can identify the successful attempt or 
 
 Versions are immutable; tags are mutable pointers to existing versions. This supports promotion and rollback without replacing bytes at an existing version URL. Full package metadata reads fetch versions and tags in one D1 batch to avoid combining different snapshots. A version or tag selector resolves through the package/tag and package/version indexes in one SQL statement, without loading the package's complete version history.
 
+Installation metadata uses an explicit field projection over the stored manifest JSON inside D1. This avoids transferring discarded descriptions, readmes, and custom fields into Worker memory, while serving already-published versions without a backfill. Full and abbreviated responses read package timestamps in the same batch as versions and tags. Tag mutations update that timestamp transactionally. Content negotiation varies on Accept and retains private, non-stored responses.
+
 ## Why publish uses a streaming parser
 
 Standard npm publish embeds a Base64 tarball in JSON. Reading the complete body with `request.json()` would retain both the encoded request and decoded bytes, making Worker memory usage grow with package size. A separate upload protocol would require changing normal package publishing workflows.
@@ -46,17 +48,18 @@ Migrations run before Worker deployment. New migrations must remain compatible w
 
 ## Code map
 
-| Location                        | Responsibility                                                            |
-| ------------------------------- | ------------------------------------------------------------------------- |
-| `src/config.ts`                 | Public configuration types and validation                                 |
-| `src/cli/`                      | Account selection, resource provisioning, saved state, Wrangler execution |
-| `src/worker.ts`                 | HTTP routing, authentication dispatch, request IDs                        |
-| `src/runtime/publish-stream.ts` | Incremental parsing, decoding, multipart upload, streaming hashes         |
-| `src/runtime/publish.ts`        | Publish validation and D1 commit/reconciliation                           |
-| `src/runtime/read.ts`           | Metadata and tarball reads                                                |
-| `src/runtime/dist-tags.ts`      | Tag reads and mutations                                                   |
-| `src/runtime/github-oidc.ts`    | GitHub JWT verification, bounded JWKS retrieval, and package grants       |
-| `migrations/`                   | Append-only D1 schema history                                             |
+| Location                          | Responsibility                                                            |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| `src/config.ts`                   | Public configuration types and validation                                 |
+| `src/cli/`                        | Account selection, resource provisioning, saved state, Wrangler execution |
+| `src/worker.ts`                   | HTTP routing, authentication dispatch, request IDs                        |
+| `src/runtime/publish-stream.ts`   | Incremental parsing, decoding, multipart upload, streaming hashes         |
+| `src/runtime/publish.ts`          | Publish validation and D1 commit/reconciliation                           |
+| `src/runtime/read.ts`             | Metadata and tarball reads                                                |
+| `src/runtime/install-metadata.ts` | Installation media negotiation and D1 manifest projection                 |
+| `src/runtime/dist-tags.ts`        | Tag reads and mutations                                                   |
+| `src/runtime/github-oidc.ts`      | GitHub JWT verification, bounded JWKS retrieval, and package grants       |
+| `migrations/`                     | Append-only D1 schema history                                             |
 
 ## Deliberate boundaries
 

@@ -124,3 +124,227 @@ describe("selected package metadata", () => {
     expect((await registry.fetch(`${url}/1.0.0`)).status).toBe(401);
   });
 });
+
+describe("abbreviated installation metadata", () => {
+  const mediaType = "application/vnd.npm.install-v1+json";
+
+  it.each([
+    ["none", {}, false],
+    ["empty", { scripts: { install: "" } }, false],
+    ["prepare", { scripts: { prepare: "node prepare.js" } }, false],
+    ["preinstall", { scripts: { preinstall: "node setup.js" } }, true],
+    ["install", { scripts: { install: "node setup.js" } }, true],
+    ["native", { gypfile: true }, true],
+    ["declared", { hasInstallScript: true }, true],
+  ] as const)("reports install scripts for %s manifests", async (label, fields, expected) => {
+    const packageName = `@acme/install-script-${label}`;
+    await env.PKGFLARE_DB.prepare("INSERT INTO packages VALUES (?1, ?2, ?2)")
+      .bind(packageName, "2026-01-01T00:00:00.000Z")
+      .run();
+    await env.PKGFLARE_DB.prepare(
+      "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+      .bind(
+        packageName,
+        "1.0.0",
+        JSON.stringify({ name: packageName, version: "1.0.0", ...fields }),
+        `install-scripts/${label}`,
+        `${label}-1.0.0.tgz`,
+        "shasum",
+        "integrity",
+        8,
+        "2026-01-01T00:00:00.000Z",
+      )
+      .run();
+    const response = await registry.fetch(
+      `https://registry.example/${encodeURIComponent(packageName)}`,
+      { headers: { ...headers, accept: mediaType } },
+    );
+    const body = await response.json<{ versions: Record<string, Record<string, unknown>> }>();
+    expect(body.versions["1.0.0"]?.hasInstallScript).toBe(expected);
+    expect(body.versions["1.0.0"]).not.toHaveProperty("scripts");
+    expect(body.versions["1.0.0"]).not.toHaveProperty("_hasShrinkwrap");
+  });
+
+  it("reduces both D1 result data and response size for a large version history", async () => {
+    const full = await registry.fetch(url, { headers });
+    const fullText = await full.text();
+    let databaseBytes = 0;
+    const batch = env.PKGFLARE_DB.batch.bind(env.PKGFLARE_DB);
+    vi.spyOn(env.PKGFLARE_DB, "batch").mockImplementation(
+      async <T>(statements: D1PreparedStatement[]) => {
+        const results = await batch<T>(statements);
+        databaseBytes += new TextEncoder().encode(
+          JSON.stringify(results.map((result) => result.results)),
+        ).byteLength;
+        return results;
+      },
+    );
+    const response = await readPackage(
+      new Request(url, { headers: { accept: mediaType } }),
+      {
+        env: {
+          PKGFLARE_DB: env.PKGFLARE_DB,
+          PKGFLARE_BUCKET: env.PKGFLARE_BUCKET,
+          PKGFLARE_CONFIG: env.PKGFLARE_CONFIG,
+        },
+        config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG)),
+        requestId: "abbreviated-read-test",
+      },
+      name,
+    );
+    expect(response.headers.get("content-type")).toBe(`${mediaType}; charset=utf-8`);
+    expect(response.headers.get("vary")).toBe("Accept");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const text = await response.text();
+    const body = JSON.parse(text) as {
+      versions: Record<string, unknown>;
+      name: string;
+      modified: string;
+    };
+    expect(body.name).toBe(name);
+    expect(body.modified).toMatch(/^\d{4}-/);
+    expect(Object.keys(body.versions)).toHaveLength(1000);
+    expect(body.versions["1.0.0"]).toMatchObject({
+      dependencies: { "@acme/dependency": "^1.0.0" },
+    });
+    expect(body.versions["1.0.0"]).not.toHaveProperty("description");
+    expect(text.length).toBeLessThan(fullText.length / 3);
+    expect(databaseBytes).toBeGreaterThan(0);
+    expect(databaseBytes).toBeLessThan(fullText.length / 3);
+  });
+
+  it("preserves full metadata by default and for selectors", async () => {
+    for (const target of [url, `${url}/1.0.0`, `${url}/latest`]) {
+      const response = await registry.fetch(target, {
+        headers: { ...headers, ...(target === url ? {} : { accept: mediaType }) },
+      });
+      expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      const body = await response.json<{
+        versions?: Record<string, { description: string }>;
+        description?: string;
+      }>();
+      expect(target === url ? body.versions?.["1.0.0"]?.description : body.description).toContain(
+        "metadata",
+      );
+      if (target === url) expect(response.headers.get("vary")).toBe("Accept");
+    }
+    const head = await registry.fetch(url, {
+      method: "HEAD",
+      headers: { ...headers, accept: mediaType },
+    });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-type")).toBe(`${mediaType}; charset=utf-8`);
+    expect(await head.text()).toBe("");
+    expect((await registry.fetch(url, { headers: { accept: mediaType } })).status).toBe(401);
+  });
+
+  it("preserves installation fields and JSON types while deriving install-script indicators", async () => {
+    const packageName = "@acme/install-fields";
+    const manifest = {
+      name: packageName,
+      version: "1.0.0",
+      description: "long description",
+      readme: "long readme",
+      custom: "not needed for installation",
+      dependencies: { "@acme/dep": "^1" },
+      optionalDependencies: { "@acme/optional": "^2" },
+      devDependencies: { "@acme/dev": "^3" },
+      acceptDependencies: { "@acme/dep": "^2" },
+      peerDependencies: { "@acme/peer": "^4" },
+      peerDependenciesMeta: { "@acme/peer": { optional: true } },
+      bundleDependencies: ["@acme/bundled"],
+      bundledDependencies: ["@acme/bundled"],
+      bin: { tool: "cli.js" },
+      directories: { bin: "bin" },
+      engines: { node: ">=22" },
+      cpu: ["x64", "arm64"],
+      os: ["linux", "darwin"],
+      libc: ["glibc", "musl"],
+      deprecated: "example warning",
+      funding: [{ url: "https://example.com/funding" }],
+      _hasShrinkwrap: false,
+      hasInstallScript: false,
+      scripts: { postinstall: "node setup.js" },
+      dist: { fileCount: 3, unpackedSize: 120, tarball: "https://example.com/untrusted.tgz" },
+    };
+    await env.PKGFLARE_DB.prepare("INSERT INTO packages VALUES (?1, ?2, ?2)")
+      .bind(packageName, "2026-01-01T00:00:00.000Z")
+      .run();
+    await env.PKGFLARE_DB.prepare(
+      "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+      .bind(
+        packageName,
+        "1.0.0",
+        JSON.stringify(manifest),
+        "install-fields/1.0.0",
+        "install-fields-1.0.0.tgz",
+        "shasum",
+        "integrity",
+        8,
+        "2026-01-01T00:00:00.000Z",
+      )
+      .run();
+    const target = `https://registry.example/${encodeURIComponent(packageName)}`;
+    const response = await registry.fetch(target, { headers: { ...headers, accept: mediaType } });
+    const body = await response.json<{
+      versions: Record<string, Record<string, unknown>>;
+      modified: string;
+    }>();
+    const version = body.versions["1.0.0"];
+    expect(version).toEqual({
+      name: packageName,
+      version: "1.0.0",
+      dependencies: manifest.dependencies,
+      optionalDependencies: manifest.optionalDependencies,
+      devDependencies: manifest.devDependencies,
+      acceptDependencies: manifest.acceptDependencies,
+      peerDependencies: manifest.peerDependencies,
+      peerDependenciesMeta: manifest.peerDependenciesMeta,
+      bundleDependencies: manifest.bundleDependencies,
+      bundledDependencies: manifest.bundledDependencies,
+      bin: manifest.bin,
+      directories: manifest.directories,
+      engines: manifest.engines,
+      cpu: manifest.cpu,
+      os: manifest.os,
+      libc: manifest.libc,
+      deprecated: manifest.deprecated,
+      funding: manifest.funding,
+      _hasShrinkwrap: false,
+      hasInstallScript: true,
+      dist: {
+        fileCount: 3,
+        unpackedSize: 120,
+        tarball: "https://registry.example/%40acme/install-fields/-/install-fields-1.0.0.tgz",
+        shasum: "shasum",
+        integrity: "integrity",
+      },
+    });
+    const tagUrl = `https://registry.example/-/package/${encodeURIComponent(packageName)}/dist-tags/latest`;
+    for (const method of ["PUT", "DELETE"]) {
+      await env.PKGFLARE_DB.prepare("UPDATE packages SET updated_at = ?2 WHERE name = ?1")
+        .bind(packageName, "2026-01-01T00:00:00.000Z")
+        .run();
+      expect(
+        (
+          await registry.fetch(tagUrl, {
+            method,
+            headers: { authorization: "Bearer publish-secret" },
+            ...(method === "PUT" ? { body: JSON.stringify("1.0.0") } : {}),
+          })
+        ).status,
+      ).toBe(200);
+      const updated = await (
+        await registry.fetch(target, { headers: { ...headers, accept: mediaType } })
+      ).json<{ modified: string; "dist-tags": Record<string, string> }>();
+      expect(updated.modified).not.toBe("2026-01-01T00:00:00.000Z");
+      expect(updated["dist-tags"]).toEqual(method === "PUT" ? { latest: "1.0.0" } : {});
+      const full = await (
+        await registry.fetch(target, { headers })
+      ).json<{ time: { modified: string } }>();
+      expect(full.time.modified).toBe(updated.modified);
+    }
+  });
+});
