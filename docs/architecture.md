@@ -10,7 +10,7 @@ R2 and D1 do not share a transaction. Each publish therefore uploads to a unique
 
 If the D1 result is uncertain, read-back can identify the successful attempt or a losing attempt. Only a confirmed losing object's key may be deleted immediately. An unknown result retains the object because deleting it could break a committed version. This trades possible unused storage for preserving installable packages. Any future garbage collector must account for in-flight requests and uncertain commits.
 
-Versions are immutable; tags are mutable pointers to existing versions. This supports promotion and rollback without replacing bytes at an existing version URL. Package metadata reads fetch versions and tags in one D1 batch to avoid combining different snapshots.
+Versions are immutable; tags are mutable pointers to existing versions. This supports promotion and rollback without replacing bytes at an existing version URL. Full package metadata reads fetch versions and tags in one D1 batch to avoid combining different snapshots. A version or tag selector resolves through the package/tag and package/version indexes in one SQL statement, without loading the package's complete version history.
 
 ## Why publish uses a streaming parser
 

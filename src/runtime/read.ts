@@ -56,18 +56,22 @@ export async function readPackage(
     return npmError(404, "not_found", "package not found");
   }
 
-  const { versions, tags } = await packageRows(context, packageName);
-  if (versions.length === 0) return npmError(404, "not_found", "package not found");
-
   if (selector !== undefined) {
-    const selectedVersion = tags.find((row) => row.tag === selector)?.version ?? selector;
-    const row = versions.find((candidate) => candidate.version === selectedVersion);
+    const [result] = await context.env.PKGFLARE_DB.batch<StoredVersionRow>([
+      context.env.PKGFLARE_DB.prepare(
+        "SELECT version, manifest_json, tarball_file, shasum, integrity, published_at FROM versions WHERE package_name = ?1 AND version = COALESCE((SELECT version FROM dist_tags WHERE package_name = ?1 AND tag = ?2), ?2)",
+      ).bind(packageName, selector),
+    ]);
+    const row = result?.results[0];
     return row === undefined
       ? npmError(404, "not_found", "package version or dist-tag not found")
       : json(publicManifest(request, packageName, row), {
           headers: { "cache-control": "private, no-store" },
         });
   }
+
+  const { versions, tags } = await packageRows(context, packageName);
+  if (versions.length === 0) return npmError(404, "not_found", "package not found");
 
   const manifests = Object.fromEntries(
     versions.map((row) => [row.version, publicManifest(request, packageName, row)]),
