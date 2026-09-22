@@ -1,6 +1,6 @@
 # Operating a registry
 
-This guide covers the deployment project that installs `@ponharu/pkgflare`. Start with the [README](../README.md) to create a registry and publish a package.
+Run deployment commands in the private project that installs `@ponharu/pkgflare`. Package publication and installation happen in separate projects.
 
 ## Cloudflare authentication and domains
 
@@ -81,95 +81,16 @@ npx pkgflare deploy --adopt-existing
 
 Adoption permits applying migrations and deploying over existing resources; it does not import or validate arbitrary registry data. Use it only for resources intended for this pkgflare deployment. A successful Worker creation whose result was lost can also require adoption on retry. Saved D1 and R2 identifiers are reused.
 
-## Registry authentication
+## Rotate tokens
 
-Cloudflare Secret tokens cover the whole registry. Publish permission includes read access and dist-tag changes. Use read-only tokens for installation jobs and keep publish tokens limited to package release jobs.
+To rotate a token without interrupting existing clients:
 
-For rotation, add a new binding while retaining the old one, deploy, register the new Secret, and switch clients to it. Once clients have switched, remove the old binding and deploy again, then delete the old Secret. Removing a configured binding revokes that token after deployment. For urgent revocation, delete its Secret through Cloudflare; other configured tokens remain usable. Revocation cannot retract package bytes already downloaded by clients.
+1. Add a new Secret binding to the config while retaining the old binding, then deploy.
+2. Register the new Secret and switch clients to it.
+3. Remove the old binding from the config and deploy again.
+4. Delete the old Cloudflare Secret.
 
-## GitHub Actions OIDC
-
-GitHub Actions jobs may authenticate without a stored registry token. pkgflare accepts a GitHub OIDC JWT directly as the npm Bearer token. This preserves normal npm-compatible requests and avoids adding a pkgflare session-signing Secret or token-exchange endpoint. The JWT is short-lived and must be requested separately by each job.
-
-This feature is registry authentication only. It is not npmjs.org Trusted Publishing, does not publish to npmjs.org, and does not authenticate Wrangler or the Cloudflare management API.
-
-Configure `auth.githubOidc.audience` and one or more subjects. Each subject is an allow rule:
-
-```ts
-githubOidc: {
-  audience: "pkgflare://packages.example.com",
-  subjects: [{
-    repositoryId: "123456789",
-    repositoryOwnerId: "987654321",
-    ref: "refs/tags/v*",
-    workflowRef: "acme/example/.github/workflows/publish.yml@refs/tags/v*",
-    jobWorkflowRef: "acme/example/.github/workflows/publish.yml@*",
-    permissions: ["publish"],
-    packages: ["@acme/example"],
-  }],
-}
-```
-
-Repository and owner IDs are decimal GitHub IDs and remain the primary repository identity checks across renames. `ref` and `workflowRef` accept branch or tag refs; they are exact matches unless they end in `*`, in which case only that final prefix wildcard is supported. `jobWorkflowRef` accepts the same refs, an exact 40-character lowercase hexadecimal commit SHA, or `@*` after an exact owner/repository/workflow path. Package grants are exact scoped package names or a complete scope wildcard such as `@acme/*`; they must belong to a configured registry scope.
-
-The complete normalized registry configuration must fit Cloudflare's 5 KiB per-variable limit. pkgflare checks this before deployment; prefer a scope wildcard or another registry when a very large subject/package matrix would exceed it.
-
-`jobWorkflowRef` is optional in the configuration, but omission is an explicit requirement that the token does not contain `job_workflow_ref`; it is not a wildcard. GitHub-issued tokens can include `job_workflow_ref` for jobs defined directly in a workflow. In that case, set `jobWorkflowRef` to that workflow's ref, which normally matches `workflowRef` as shown above. Omit it only for an execution environment whose tokens do not contain the claim.
-
-For a reusable workflow, set the caller and called workflow refs independently:
-
-- `repositoryId`, `repositoryOwnerId`, `ref`, and `workflowRef` identify and constrain the caller.
-- `jobWorkflowRef` identifies the called reusable workflow and its trusted ref.
-
-To allow routine commit-SHA updates for one reusable workflow without changing the registry policy, fix its complete identity and wildcard only the ref:
-
-```ts
-{
-  jobWorkflowRef: "acme/automation/.github/workflows/publish.yml@*",
-}
-```
-
-This wildcard cannot replace any part of the owner, repository, or workflow path. A matching JWT must still contain a valid full commit SHA, branch ref, or tag ref, and every repository ID, owner ID, caller ref/workflow, permission, and package grant in the subject must also match. Continue pinning the reusable workflow's `uses` entry to a full commit SHA; `@*` only avoids duplicating that changing revision in the registry policy.
-
-Set `jobWorkflowRef` to a full commit SHA instead when the registry policy must independently require that one revision. That stricter option requires a policy deployment whenever the reusable workflow SHA changes. GitHub keeps the caller information in the standard claims and puts the called workflow reference in `job_workflow_ref`; its trust examples also support filtering a fixed reusable workflow repository with a wildcard ref. See GitHub's documentation for [OIDC with reusable workflows](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows) and [calling reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
-
-OIDC requests from `pull_request`, `pull_request_target`, related pull-request events, and merge queues are rejected even if another claim pattern would match. Use a trusted branch, tag, or manually dispatched workflow. A `publish` grant includes reads and dist-tag changes only for its allowed packages; a `read` grant cannot publish or change tags. Metadata and tarball reads apply the same package grant.
-
-The job needs `id-token: write`. Keep a normal scope-specific `.npmrc` with `${NPM_TOKEN}`. Bootstrap the explicitly named public CLI before installing project dependencies, then obtain the JWT through command substitution so it is not printed:
-
-```yaml
-permissions:
-  contents: read
-  id-token: write
-
-steps:
-  - uses: actions/checkout@v4
-  - uses: actions/setup-node@v4
-    with:
-      node-version: 22
-  - name: Install dependencies
-    run: |
-      set -eu
-      NPM_TOKEN="$(npm exec --yes --ignore-scripts --registry=https://registry.npmjs.org --package=@ponharu/pkgflare@1.2.0 -- pkgflare auth github --audience 'pkgflare://packages.example.com')"
-      export NPM_TOKEN
-      npm ci
-  - name: Publish package
-    run: |
-      set -eu
-      NPM_TOKEN="$(npm exec --yes --ignore-scripts --registry=https://registry.npmjs.org --package=@ponharu/pkgflare@1.2.0 -- pkgflare auth github --audience 'pkgflare://packages.example.com')"
-      export NPM_TOKEN
-      npm publish
-```
-
-`--package=@ponharu/pkgflare@1.2.0` identifies the scoped package and a fixed version even in a clean checkout. Update the version pin deliberately when upgrading. `--ignore-scripts` applies to CLI bootstrapping; the subsequent project installation retains its normal script behavior. Do not invoke bare `npx pkgflare` before installing the CLI: npm can resolve the unscoped package name instead.
-
-An alternative after project dependencies are available is to add `@ponharu/pkgflare` as an exact development dependency, commit the lockfile, and run its local binary with `npm exec --no -- pkgflare auth github --audience 'pkgflare://packages.example.com'`. This alone cannot bootstrap an initial `npm ci` that needs private packages; use the explicit package command above for that first authentication.
-
-Grant the installation step access to every private dependency it needs. For read-only CI, grant `permissions: ["read"]`, omit the publish step, and use `npm ci`, pnpm, Yarn Classic, or Bun after exporting the token. Request a fresh token before publication because dependency installation can outlast the previous token. Keep token assignment separate from `export` and the package command so `set -e` stops the step on authentication failure. Never echo the command result or enable shell tracing around it.
-
-The JWT is a Bearer credential and can be replayed until it expires. Request it immediately before the package command, do not persist it in files or job outputs, and keep untrusted scripts out of the authenticated step.
-
-The Worker accepts only RS256 tokens issued by `https://token.actions.githubusercontent.com` for the configured audience. It validates signature, `typ`, expiry, not-before, issued-at age, subject presence, JWT ID, repository and owner IDs, ref, workflow, event, permission, and package. JWKS is fetched only from GitHub's fixed endpoint with a five-second timeout, 64 KiB/16-key response limits, a five-minute in-isolate cache, and a 30-second unknown-key refresh cooldown. Invalid tokens are rejected. An unavailable or invalid JWKS endpoint fails closed with 503; token contents are not logged.
+Missing configured bindings do not disable other valid tokens. For urgent revocation, delete the compromised Secret through Cloudflare. Revocation cannot retract package bytes already downloaded by clients.
 
 ## Backups and restoration
 
