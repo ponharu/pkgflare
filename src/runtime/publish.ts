@@ -1,6 +1,6 @@
 import { valid as validVersion } from "semver";
 import { logRegistryError } from "./diagnostics.js";
-import { isAllowedPackage } from "./package-name.js";
+import { isAllowedPackage, isValidDistTag } from "./package-name.js";
 import { parsePublishRequest, type PendingTarball, PublishStreamError } from "./publish-stream.js";
 import { json, npmError } from "./response.js";
 import type { PackageManifest, PublishDocument, RuntimeContext } from "./types.js";
@@ -82,7 +82,10 @@ function validateDocument(
   }
   const tags: Record<string, string> = {};
   for (const [tag, target] of Object.entries(document["dist-tags"])) {
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(tag) || target !== version) {
+    if (!isValidDistTag(tag)) {
+      throw new PublishError(400, "bad_request", "dist-tag is invalid");
+    }
+    if (target !== version) {
       throw new PublishError(400, "bad_request", "dist-tags must reference the published version");
     }
     tags[tag] = version;

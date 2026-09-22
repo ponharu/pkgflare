@@ -55,7 +55,7 @@ The Registry supports:
 
 The login/adduser, unpublish, deprecate, search, and audit APIs are not implemented.
 
-Package versions are immutable. Dist-tags are independently mutable and may point to any existing version, enabling promotion and rollback without republishing bytes.
+Package versions are immutable. Dist-tags are independently mutable and may point to any existing version, enabling promotion and rollback without republishing bytes. Publication and tag mutation share the same tag-name validation: names interpreted as SemVer ranges, such as `1.0.0`, `v1.4`, or `1.x`, are rejected. A rejected publish does not reserve its version or expose metadata or a completed tarball.
 
 Tarball GET supports closed, open-ended, and suffix byte ranges. Unsatisfiable ranges return 416 with `Content-Range: bytes */<size>`; malformed fields, unsupported range units, and multiple ranges are ignored with a full 200 response. HEAD ignores Range. `If-None-Match` uses weak ETag comparison, including lists and `*`, and is evaluated before Range. `If-Range` requires an exact strong ETag; weak validators, dates, and mismatches fall back to the full representation. Authorization is required before conditional responses.
 
