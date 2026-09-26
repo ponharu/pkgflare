@@ -172,11 +172,7 @@ function matchesIfNoneMatch(value: string | null, etag: string): boolean {
     index += 1;
     while (index < value.length && value[index] !== '"') {
       const code = value.charCodeAt(index);
-      if (
-        code !== 0x21 &&
-        !(code >= 0x23 && code <= 0x7e) &&
-        !(code >= 0x80 && code <= 0xff)
-      ) {
+      if (code !== 0x21 && !(code >= 0x23 && code <= 0x7e) && !(code >= 0x80 && code <= 0xff)) {
         return false;
       }
       index += 1;
