@@ -591,6 +591,16 @@ describe("publish and install protocol", () => {
       expect(response.status).toBe(200);
       await response.arrayBuffer();
     }
+    for (const validator of [
+      `"other",${" ".repeat(8 * 1024)}x`,
+      `"other",${" ".repeat(8 * 1024)}${etag!}`,
+    ]) {
+      const response = await registry.fetch(url, {
+        headers: { ...authorization("read-secret"), "if-none-match": validator },
+      });
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+    }
     expect((await registry.fetch(url, { headers: { "if-none-match": "*" } })).status).toBe(401);
   });
 

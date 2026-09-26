@@ -149,17 +149,44 @@ function byteRange(
   return { offset: Number(start), length: Number(final - start + 1n) };
 }
 
+const MAX_IF_NONE_MATCH_LENGTH = 8 * 1024;
+
 function matchesIfNoneMatch(value: string | null, etag: string): boolean {
-  if (value === null) return false;
+  if (value === null || value.length > MAX_IF_NONE_MATCH_LENGTH) return false;
   if (value.trim() === "*") return true;
-  // Commas are legal inside opaque entity tags, so do not split the field on commas.
-  const entityTag = /(?:W\/)?"[\x21\x23-\x7e\x80-\xff]*"/g;
-  const list = new RegExp(
-    `^[\\t ]*(?:${entityTag.source})?(?:[\\t ]*,[\\t ]*(?:${entityTag.source})?)*[\\t ]*$`,
-  );
-  if (!list.test(value)) return false;
-  const tags = value.match(entityTag);
-  return tags?.some((tag) => tag.replace(/^W\//, "") === etag) ?? false;
+
+  let index = 0;
+  let matched = false;
+  while (index < value.length) {
+    while (value[index] === " " || value[index] === "\t") index += 1;
+    if (index === value.length) break;
+    // Empty list members are permitted by the HTTP list extension grammar.
+    if (value[index] === ",") {
+      index += 1;
+      continue;
+    }
+
+    if (value.startsWith("W/", index)) index += 2;
+    if (value[index] !== '"') return false;
+    const tagStart = index;
+    index += 1;
+    while (index < value.length && value[index] !== '"') {
+      const code = value.charCodeAt(index);
+      if (code !== 0x21 && !(code >= 0x23 && code <= 0x7e) && !(code >= 0x80 && code <= 0xff)) {
+        return false;
+      }
+      index += 1;
+    }
+    if (index === value.length) return false;
+    index += 1;
+    matched ||= value.slice(tagStart, index) === etag;
+
+    while (value[index] === " " || value[index] === "\t") index += 1;
+    if (index === value.length) return matched;
+    if (value[index] !== ",") return false;
+    index += 1;
+  }
+  return matched;
 }
 
 function tarballHeaders(etag: string, integrity: string): Headers {
