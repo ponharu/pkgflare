@@ -12,6 +12,17 @@
       "description": "Require human approval before merging dependency updates",
       "matchPackageNames": ["*"],
       "automerge": false
+    },
+    {
+      "description": "Keep runtime dependencies pinned for published installations",
+      "matchDepTypes": ["dependencies"],
+      "rangeStrategy": "pin"
     }
-  ]
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": "0 days",
+    "dependencyDashboardApproval": false,
+    "automerge": false
+  }
 }

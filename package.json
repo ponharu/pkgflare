@@ -57,13 +57,14 @@
     "test:coverage": "bun run build && vitest run --coverage && vitest run --config vitest.worker.config.ts --coverage --coverage.provider=istanbul",
     "prepack": "bun run build",
     "prepare": "lefthook install",
-    "release": "semantic-release"
+    "release": "semantic-release",
+    "audit": "bun scripts/audit-dependencies.ts"
   },
   "dependencies": {
-    "jiti": "^2.7.0",
+    "jiti": "2.7.0",
     "jose": "6.2.12",
-    "semver": "^7.8.5",
-    "wrangler": "^4.125.0"
+    "semver": "7.8.5",
+    "wrangler": "4.149.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
@@ -87,6 +88,10 @@
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "yarn": "^1.22.22"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "undici@7": "7.29.1"
   },
   "engines": {
     "node": ">=22.0.0"

@@ -74,6 +74,9 @@ try {
     silent: true,
   });
 
+  // Consumers do not inherit this repository's lockfile or root overrides.
+  await command("npm", ["audit", "--omit=dev"], { cwd: projectDirectory });
+
   const installedPackage = join(projectDirectory, "node_modules", "@ponharu", "pkgflare");
   await Promise.all([
     readFile(join(installedPackage, "docs", "specification.md"), "utf8"),
