@@ -64,7 +64,7 @@
     "jiti": "2.7.0",
     "jose": "6.2.12",
     "semver": "7.8.5",
-    "wrangler": "4.149.0"
+    "wrangler": "4.151.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
