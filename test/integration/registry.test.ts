@@ -455,6 +455,39 @@ describe("GitHub Actions OIDC authentication", () => {
     expect(log.mock.calls.flat().join(" ")).not.toContain("eyJ");
   });
 
+  it("keeps unexpired known signing keys usable after a failed refresh", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const request = mockGithubJwks();
+    const known = await oidcToken();
+    const unknown = await oidcToken({}, oidcPrivateKey, "unknown-key");
+    expect(await oidcDecision(known)).toBeNull();
+    clock.mockReturnValue(now + 31_000);
+    request.mockResolvedValue(new Response(null, { status: 503 }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await oidcDecision(unknown))?.status).toBe(503);
+    expect(await oidcDecision(known)).toBeNull();
+    clock.mockReturnValue(now + 5 * 60_000);
+    expect((await oidcDecision(known))?.status).toBe(503);
+  });
+
+  it("holds failed JWKS requests during cooldown and recovers afterward", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const token = await oidcToken();
+    const request = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 503 }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await oidcDecision(token))?.status).toBe(503);
+    request.mockImplementation(async () => new Response(JSON.stringify({ keys: [oidcJwk] })));
+    clock.mockReturnValue(now + 29_000);
+    expect((await oidcDecision(token))?.status).toBe(503);
+    expect(await oidcDecision("read-secret", "read")).toBeNull();
+    clock.mockReturnValue(now + 30_000);
+    expect(await oidcDecision(token)).toBeNull();
+  });
+
   it("rejects an oversized JWKS response without reading it unbounded", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ keys: [oidcJwk], padding: "x".repeat(64 * 1024) })),
@@ -1014,6 +1047,30 @@ describe("publish and install protocol", () => {
     expect(deleted).toBe(false);
     expect((await publishPackage(makeRequest(), context, "@acme/retry")).status).toBe(201);
   });
+
+  it.each([null, "metadata", ["metadata"], 1, true])(
+    "rejects invalid dist metadata %j without reserving the version or keeping an object",
+    async (dist) => {
+      const name = `@acme/dist-shape-${crypto.randomUUID()}`;
+      const document = publishBody(name, "1.0.0", new Uint8Array([1]));
+      document.versions = { "1.0.0": { name, version: "1.0.0", dist } };
+      const rejected = await publishRaw(name, JSON.stringify(document), 64);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toMatchObject({ error: "bad_request" });
+      expect(
+        (
+          await registry.fetch(`https://registry.example/${encodeURIComponent(name)}`, {
+            headers: authorization("read-secret"),
+          })
+        ).status,
+      ).toBe(404);
+      expect(
+        (await env.PKGFLARE_BUCKET.list({ prefix: `packages/${encodeURIComponent(name)}/` }))
+          .objects,
+      ).toHaveLength(0);
+      expect((await publish(name, "1.0.0")).status).toBe(201);
+    },
+  );
 
   it("rejects packages outside configured scopes and malformed attachments", async () => {
     expect((await publish("@other/example", "1.0.0")).status).toBe(403);
