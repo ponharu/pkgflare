@@ -19,6 +19,7 @@ interface CachedJwks {
 
 let cachedJwks: CachedJwks | undefined;
 let pendingJwks: Promise<CachedJwks> | undefined;
+let jwksRetryAt = 0;
 
 export class GitHubOidcUnavailableError extends Error {
   override readonly name = "GitHubOidcUnavailableError";
@@ -111,10 +112,17 @@ async function loadJwks(force: boolean): Promise<CachedJwks> {
   const now = Date.now();
   if (!force && cachedJwks !== undefined && cachedJwks.expiresAt > now) return cachedJwks;
   if (pendingJwks !== undefined) return pendingJwks;
+  if (now < jwksRetryAt) {
+    throw new GitHubOidcUnavailableError("GitHub JWKS retry is cooling down");
+  }
   pendingJwks = fetchJwks();
   try {
     cachedJwks = await pendingJwks;
+    jwksRetryAt = 0;
     return cachedJwks;
+  } catch (error) {
+    jwksRetryAt = Date.now() + jwksCooldownMilliseconds;
+    throw error;
   } finally {
     pendingJwks = undefined;
   }
@@ -234,4 +242,5 @@ export async function authorizeGitHubOidc(
 export function clearGitHubJwksCache(): void {
   cachedJwks = undefined;
   pendingJwks = undefined;
+  jwksRetryAt = 0;
 }

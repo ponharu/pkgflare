@@ -45,6 +45,198 @@ beforeAll(async () => {
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("bounded package metadata responses", () => {
+  it("retains the initial tag/version snapshot while a response is consumed", async () => {
+    const packageName = "@acme/stream-snapshot";
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const insertVersion = (version: string) =>
+      env.PKGFLARE_DB.prepare(
+        "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+      ).bind(
+        packageName,
+        version,
+        JSON.stringify({ name: packageName, version }),
+        `snapshot/${version}`,
+        `snapshot-${version}.tgz`,
+        "hash",
+        "integrity",
+        1,
+        timestamp,
+      );
+    await env.PKGFLARE_DB.batch([
+      env.PKGFLARE_DB.prepare("INSERT INTO packages VALUES (?1, ?2, ?2)").bind(
+        packageName,
+        timestamp,
+      ),
+      insertVersion("1.0.0"),
+      env.PKGFLARE_DB.prepare("INSERT INTO dist_tags VALUES (?1, 'latest', '1.0.0')").bind(
+        packageName,
+      ),
+    ]);
+    const response = await readPackage(
+      new Request(url),
+      {
+        env: {
+          PKGFLARE_DB: env.PKGFLARE_DB,
+          PKGFLARE_BUCKET: env.PKGFLARE_BUCKET,
+          PKGFLARE_CONFIG: env.PKGFLARE_CONFIG,
+        },
+        config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG)),
+        requestId: "stream-snapshot",
+      },
+      packageName,
+    );
+    await env.PKGFLARE_DB.batch([
+      insertVersion("0.0.1"),
+      insertVersion("9.0.0"),
+      env.PKGFLARE_DB.prepare(
+        "UPDATE dist_tags SET version = '9.0.0' WHERE package_name = ?1",
+      ).bind(packageName),
+    ]);
+    const body = await response.json<{
+      "dist-tags": Record<string, string>;
+      versions: Record<string, unknown>;
+      time: Record<string, string>;
+    }>();
+    expect(body["dist-tags"]).toEqual({ latest: "1.0.0" });
+    expect(Object.keys(body.versions)).toEqual(["1.0.0"]);
+    expect(body.time).toEqual({ created: timestamp, modified: timestamp, "1.0.0": timestamp });
+  });
+
+  it("does not skip large UTF-8 manifests when a byte-limited page fills", async () => {
+    const packageName = "@acme/byte-pages";
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    const description = "😀".repeat(100_000);
+    const versions = Array.from({ length: 6 }, (_, index) => `1.0.${String(index)}`);
+    await env.PKGFLARE_DB.batch([
+      env.PKGFLARE_DB.prepare("INSERT INTO packages VALUES (?1, ?2, ?2)").bind(
+        packageName,
+        timestamp,
+      ),
+      ...versions.map((version) =>
+        env.PKGFLARE_DB.prepare(
+          "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        ).bind(
+          packageName,
+          version,
+          JSON.stringify({ name: packageName, version, description }),
+          `bytes/${version}`,
+          `bytes-${version}.tgz`,
+          "hash",
+          "integrity",
+          1,
+          timestamp,
+        ),
+      ),
+    ]);
+    let largestResult = 0;
+    const batch = env.PKGFLARE_DB.batch.bind(env.PKGFLARE_DB);
+    vi.spyOn(env.PKGFLARE_DB, "batch").mockImplementation(
+      async <T>(statements: D1PreparedStatement[]) => {
+        const results = await batch<T>(statements);
+        largestResult = Math.max(
+          largestResult,
+          new TextEncoder().encode(JSON.stringify(results.map((r) => r.results))).byteLength,
+        );
+        return results;
+      },
+    );
+    const response = await registry.fetch(
+      `https://registry.example/${encodeURIComponent(packageName)}`,
+      { headers },
+    );
+    const body = await response.json<{ versions: Record<string, { description: string }> }>();
+    expect(Object.keys(body.versions)).toEqual(versions);
+    for (const version of versions) expect(body.versions[version]?.description).toBe(description);
+    expect(largestResult).toBeLessThan(1.5 * 1024 * 1024);
+  });
+
+  it("fails a streamed response without exposing storage error details", async () => {
+    const response = await readPackage(
+      new Request(url),
+      {
+        env: {
+          PKGFLARE_DB: env.PKGFLARE_DB,
+          PKGFLARE_BUCKET: env.PKGFLARE_BUCKET,
+          PKGFLARE_CONFIG: env.PKGFLARE_CONFIG,
+        },
+        config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG)),
+        requestId: "failed-history",
+      },
+      name,
+    );
+    vi.spyOn(env.PKGFLARE_DB, "batch").mockRejectedValue(new Error("private storage details"));
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(response.text()).rejects.toThrow("package metadata could not be read");
+    expect(log.mock.calls.flat().join(" ")).toContain("metadata_stream");
+    expect(log.mock.calls.flat().join(" ")).not.toContain("private storage details");
+  });
+
+  it("lets a consumer cancel before the history is read", async () => {
+    const response = await readPackage(
+      new Request(url),
+      {
+        env: {
+          PKGFLARE_DB: env.PKGFLARE_DB,
+          PKGFLARE_BUCKET: env.PKGFLARE_BUCKET,
+          PKGFLARE_CONFIG: env.PKGFLARE_CONFIG,
+        },
+        config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG)),
+        requestId: "cancel-history",
+      },
+      name,
+    );
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error("missing metadata body");
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain('"versions":{');
+    expect(new TextDecoder().decode(first.value)).not.toContain('"1.0.999":');
+    await reader.cancel();
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it.each(["application/json", "application/vnd.npm.install-v1+json"])(
+    "streams all versions with bounded database results for %s",
+    async (accept) => {
+      let largestResult = 0;
+      const batch = env.PKGFLARE_DB.batch.bind(env.PKGFLARE_DB);
+      vi.spyOn(env.PKGFLARE_DB, "batch").mockImplementation(
+        async <T>(statements: D1PreparedStatement[]) => {
+          const results = await batch<T>(statements);
+          largestResult = Math.max(
+            largestResult,
+            new TextEncoder().encode(JSON.stringify(results.map((r) => r.results))).byteLength,
+          );
+          return results;
+        },
+      );
+      const response = await readPackage(
+        new Request(url, { headers: { accept } }),
+        {
+          env: {
+            PKGFLARE_DB: env.PKGFLARE_DB,
+            PKGFLARE_BUCKET: env.PKGFLARE_BUCKET,
+            PKGFLARE_CONFIG: env.PKGFLARE_CONFIG,
+          },
+          config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG)),
+          requestId: "bounded-history",
+        },
+        name,
+      );
+      const body = await response.json<{
+        versions: Record<string, unknown>;
+        time?: Record<string, string>;
+      }>();
+      expect(Object.keys(body.versions)).toHaveLength(1000);
+      expect(body.versions["1.0.0"]).toMatchObject({ name, version: "1.0.0" });
+      expect(body.versions["1.0.999"]).toMatchObject({ name, version: "1.0.999" });
+      if (accept === "application/json")
+        expect(body.time?.["1.0.999"]).toBe("2026-01-01T00:00:00.000Z");
+      expect(largestResult).toBeLessThan(256 * 1024);
+    },
+  );
+});
+
 describe("selected package metadata", () => {
   it.each([
     ["1.0.0", "1.0.0"],
