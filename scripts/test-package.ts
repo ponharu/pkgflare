@@ -4,6 +4,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
+import { auditInstalledDependencies } from "./audit-policy";
+
 interface CommandOptions {
   cwd: string;
   silent?: boolean;
@@ -75,7 +77,7 @@ try {
   });
 
   // Consumers do not inherit this repository's lockfile or root overrides.
-  await command("npm", ["audit", "--omit=dev"], { cwd: projectDirectory });
+  auditInstalledDependencies(projectDirectory);
 
   const installedPackage = join(projectDirectory, "node_modules", "@ponharu", "pkgflare");
   await Promise.all([

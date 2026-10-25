@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 
-// No patched release exists. Only trusted release configuration patterns reach braces.
-// Reassess this exception before its expiry; all other advisories remain blocking.
-const exceptions = [{ id: "GHSA-vfj7-8cjw-p6xm", expires: "2026-11-09" }];
+import policy from "../audit-exceptions.json";
+
+const exceptions = policy.bun;
 
 const today = new Date().toISOString().slice(0, 10);
 for (const exception of exceptions) {
