@@ -77,6 +77,10 @@ function validateDocument(
     );
   }
 
+  if (manifestValue.dist !== undefined && !object(manifestValue.dist)) {
+    throw new PublishError(400, "bad_request", "manifest dist must be an object");
+  }
+
   if (!object(document["dist-tags"]) || Object.keys(document["dist-tags"]).length === 0) {
     throw new PublishError(400, "bad_request", "at least one dist-tag is required");
   }

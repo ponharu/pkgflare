@@ -1,3 +1,4 @@
+import { logRegistryError } from "./diagnostics.js";
 import { isAllowedPackage } from "./package-name.js";
 import {
   installManifestSql,
@@ -36,35 +37,115 @@ function publicManifest(
   };
 }
 
-async function packageRows(
+interface HistoryBounds {
+  watermark: number | null;
+  first: string | null;
+  last: string | null;
+}
+
+interface VersionCursor {
+  version: string;
+  published_at: string;
+}
+
+async function* versionPages<T extends VersionCursor>(
   context: RuntimeContext,
   packageName: string,
+  watermark: number,
+  manifestColumn?: string,
+): AsyncGenerator<T> {
+  let cursor = "";
+  while (true) {
+    const [result] = await context.env.PKGFLARE_DB.batch<T>([
+      context.env.PKGFLARE_DB.prepare(
+        manifestColumn === undefined
+          ? "SELECT version, published_at FROM versions WHERE package_name = ?1 AND version > ?2 AND rowid <= ?3 ORDER BY version LIMIT 128"
+          : `WITH page AS (
+            SELECT version, ${manifestColumn} AS manifest_json, tarball_file, shasum, integrity, published_at
+            FROM versions WHERE package_name = ?1 AND version > ?2 AND rowid <= ?3 ORDER BY version LIMIT 128
+          ), bounded AS (
+            SELECT *, SUM(length(CAST(manifest_json AS BLOB))) OVER (ORDER BY version) AS bytes,
+              ROW_NUMBER() OVER (ORDER BY version) AS position FROM page
+          ) SELECT version, manifest_json, tarball_file, shasum, integrity, published_at
+            FROM bounded WHERE bytes <= 1048576 OR position = 1 ORDER BY version`,
+      ).bind(packageName, cursor, watermark),
+    ]);
+    const rows = result?.results ?? [];
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      cursor = row.version;
+      yield row;
+    }
+  }
+}
+
+async function* packageJson(
+  request: Request,
+  context: RuntimeContext,
+  packageName: string,
+  watermark: number,
   abbreviated: boolean,
-): Promise<{
-  versions: StoredVersionRow[];
-  tags: DistTagRow[];
-  times: { created_at: string; updated_at: string } | undefined;
-}> {
-  const [versionsResult, tagsResult, packageResult] = (await context.env.PKGFLARE_DB.batch([
-    context.env.PKGFLARE_DB.prepare(
-      `SELECT version, ${abbreviated ? installManifestSql : "manifest_json"} AS manifest_json, tarball_file, shasum, integrity, published_at FROM versions WHERE package_name = ?1 ORDER BY published_at`,
-    ).bind(packageName),
-    context.env.PKGFLARE_DB.prepare(
-      "SELECT tag, version FROM dist_tags WHERE package_name = ?1 ORDER BY tag",
-    ).bind(packageName),
-    context.env.PKGFLARE_DB.prepare(
-      "SELECT created_at, updated_at FROM packages WHERE name = ?1",
-    ).bind(packageName),
-  ])) as [
-    D1Result<StoredVersionRow>,
-    D1Result<DistTagRow>,
-    D1Result<{ created_at: string; updated_at: string }>,
-  ];
-  return {
-    versions: versionsResult.results ?? [],
-    tags: tagsResult.results ?? [],
-    times: packageResult.results[0],
-  };
+  tags: DistTagRow[],
+  times: { created_at: string; updated_at: string } | undefined,
+  bounds: HistoryBounds,
+): AsyncGenerator<string> {
+  const modified = times?.updated_at ?? bounds.last;
+  const fields = abbreviated
+    ? {
+        name: packageName,
+        modified,
+        "dist-tags": Object.fromEntries(tags.map((row) => [row.tag, row.version])),
+      }
+    : {
+        _id: packageName,
+        name: packageName,
+        "dist-tags": Object.fromEntries(tags.map((row) => [row.tag, row.version])),
+      };
+  yield `${JSON.stringify(fields).slice(0, -1)},"versions":{`;
+  let separator = "";
+  for await (const row of versionPages<StoredVersionRow>(
+    context,
+    packageName,
+    watermark,
+    abbreviated ? installManifestSql : "manifest_json",
+  )) {
+    yield `${separator}${JSON.stringify(row.version)}:${JSON.stringify(publicManifest(request, packageName, row))}`;
+    separator = ",";
+  }
+  yield "}";
+  if (!abbreviated) {
+    yield `,"time":${JSON.stringify({ created: times?.created_at ?? bounds.first, modified }).slice(0, -1)}`;
+    for await (const row of versionPages<VersionCursor>(context, packageName, watermark)) {
+      yield `,${JSON.stringify(row.version)}:${JSON.stringify(row.published_at)}`;
+    }
+    yield "}";
+  }
+  yield "}";
+}
+
+function metadataBody(
+  context: RuntimeContext,
+  chunks: AsyncGenerator<string>,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const chunk = await chunks.next();
+          if (chunk.done) controller.close();
+          else controller.enqueue(encoder.encode(chunk.value));
+        } catch (error) {
+          logRegistryError(context.requestId, "metadata_stream", error);
+          controller.error(new Error("package metadata could not be read"));
+        }
+      },
+      async cancel() {
+        await chunks.return(undefined);
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 export async function readPackage(
@@ -92,36 +173,47 @@ export async function readPackage(
   }
 
   const abbreviated = prefersInstallMetadata(request.headers.get("accept"));
-  const { versions, tags, times } = await packageRows(context, packageName, abbreviated);
-  if (versions.length === 0) return npmError(404, "not_found", "package not found");
-
-  const manifests = Object.fromEntries(
-    versions.map((row) => [row.version, publicManifest(request, packageName, row)]),
-  );
-  const distTags = Object.fromEntries(tags.map((row) => [row.tag, row.version]));
-  const modified = times?.updated_at ?? versions.at(-1)?.published_at;
-  const headers = { "cache-control": "private, no-store", vary: "Accept" };
-  if (abbreviated) {
-    const response = json(
-      { name: packageName, modified, "dist-tags": distTags, versions: manifests },
-      { headers },
-    );
-    response.headers.set("content-type", `${installMediaType}; charset=utf-8`);
-    return response;
-  }
-  const publishedTimes = Object.fromEntries(versions.map((row) => [row.version, row.published_at]));
-  return json(
-    {
-      _id: packageName,
-      name: packageName,
-      "dist-tags": distTags,
-      versions: manifests,
-      time: {
-        created: times?.created_at ?? versions[0]?.published_at,
-        modified,
-        ...publishedTimes,
-      },
-    },
+  // Capture tags, timestamps and the immutable version high-water mark together.
+  // Later pages exclude publications committed after this snapshot.
+  const [boundsResult, tagsResult, timesResult] = await context.env.PKGFLARE_DB.batch([
+    context.env.PKGFLARE_DB.prepare(
+      "SELECT MAX(rowid) AS watermark, MIN(published_at) AS first, MAX(published_at) AS last FROM versions WHERE package_name = ?1",
+    ).bind(packageName),
+    context.env.PKGFLARE_DB.prepare(
+      "SELECT tag, version FROM dist_tags WHERE package_name = ?1 ORDER BY tag",
+    ).bind(packageName),
+    context.env.PKGFLARE_DB.prepare(
+      "SELECT created_at, updated_at FROM packages WHERE name = ?1",
+    ).bind(packageName),
+  ]);
+  const bounds = boundsResult?.results[0] as HistoryBounds | undefined;
+  if (bounds?.watermark === null || bounds?.watermark === undefined)
+    return npmError(404, "not_found", "package not found");
+  const tags = (tagsResult?.results ?? []) as unknown as DistTagRow[];
+  const times = timesResult?.results[0] as { created_at: string; updated_at: string } | undefined;
+  const headers = {
+    "cache-control": "private, no-store",
+    vary: "Accept",
+    "content-type": abbreviated
+      ? `${installMediaType}; charset=utf-8`
+      : "application/json; charset=utf-8",
+  };
+  return new Response(
+    request.method === "HEAD"
+      ? null
+      : metadataBody(
+          context,
+          packageJson(
+            request,
+            context,
+            packageName,
+            bounds.watermark,
+            abbreviated,
+            tags,
+            times,
+            bounds,
+          ),
+        ),
     { headers },
   );
 }
