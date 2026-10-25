@@ -24,5 +24,9 @@
     "minimumReleaseAge": "0 days",
     "dependencyDashboardApproval": false,
     "automerge": false
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 4am"]
   }
 }
