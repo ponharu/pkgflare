@@ -455,6 +455,22 @@ describe("GitHub Actions OIDC authentication", () => {
     expect(log.mock.calls.flat().join(" ")).not.toContain("eyJ");
   });
 
+  it("keeps unexpired known signing keys usable after a failed refresh", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const request = mockGithubJwks();
+    const known = await oidcToken();
+    const unknown = await oidcToken({}, oidcPrivateKey, "unknown-key");
+    expect(await oidcDecision(known)).toBeNull();
+    clock.mockReturnValue(now + 31_000);
+    request.mockResolvedValue(new Response(null, { status: 503 }));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await oidcDecision(unknown))?.status).toBe(503);
+    expect(await oidcDecision(known)).toBeNull();
+    clock.mockReturnValue(now + 5 * 60_000);
+    expect((await oidcDecision(known))?.status).toBe(503);
+  });
+
   it("holds failed JWKS requests during cooldown and recovers afterward", async () => {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);

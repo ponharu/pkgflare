@@ -151,6 +151,27 @@ describe("bounded package metadata responses", () => {
     expect(largestResult).toBeLessThan(1.5 * 1024 * 1024);
   });
 
+  it("fails a streamed response without exposing storage error details", async () => {
+    const response = await readPackage(
+      new Request(url),
+      {
+        env: {
+          PKGFLARE_DB: env.PKGFLARE_DB,
+          PKGFLARE_BUCKET: env.PKGFLARE_BUCKET,
+          PKGFLARE_CONFIG: env.PKGFLARE_CONFIG,
+        },
+        config: normalizeConfig(JSON.parse(env.PKGFLARE_CONFIG)),
+        requestId: "failed-history",
+      },
+      name,
+    );
+    vi.spyOn(env.PKGFLARE_DB, "batch").mockRejectedValue(new Error("private storage details"));
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(response.text()).rejects.toThrow("package metadata could not be read");
+    expect(log.mock.calls.flat().join(" ")).toContain("metadata_stream");
+    expect(log.mock.calls.flat().join(" ")).not.toContain("private storage details");
+  });
+
   it("lets a consumer cancel before the history is read", async () => {
     const response = await readPackage(
       new Request(url),
