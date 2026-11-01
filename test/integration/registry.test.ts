@@ -1037,10 +1037,11 @@ describe("publish and install protocol", () => {
       },
       env: { PKGFLARE_DB: database, PKGFLARE_BUCKET: bucket, PKGFLARE_CONFIG: "{}" },
     } as unknown as RuntimeContext;
+    const requestBody = JSON.stringify(publishBody("@acme/retry", "1.0.0", new Uint8Array([1])));
     const makeRequest = () =>
       new Request("https://registry.example/%40acme%2Fretry", {
         method: "PUT",
-        body: JSON.stringify(publishBody("@acme/retry", "1.0.0", new Uint8Array([1]))),
+        body: requestBody,
       });
 
     expect((await publishPackage(makeRequest(), context, "@acme/retry")).status).toBe(503);
