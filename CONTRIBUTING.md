@@ -8,7 +8,6 @@ Install Node.js 22 or later and the Bun version declared in `package.json`, then
 
 ```sh
 bun install --frozen-lockfile
-bun run audit
 bun run check
 bun run test
 ```
@@ -44,18 +43,14 @@ Explain the problem, the resulting behavior, and how you verified it. Call out c
 
 Pull request titles use Conventional Commits and are checked by `semantic-pr.yml`. Use squash merges so the checked title becomes the commit subject on `main`. `fix:` produces a patch release, `feat:` a minor release, and `!` or a `BREAKING CHANGE:` footer a major release. Documentation and maintenance commits do not normally trigger a release.
 
-On each push to `main`, `release.yml` calls `test.yml` for the dependency audit, checks, unit/Worker tests, client compatibility, and package verification. After verification, a read-only job builds `dist/` and uploads it as an immutable artifact for that workflow run. A separate release job downloads those assets, installs locked dependencies with lifecycle scripts disabled, and disables npm lifecycle scripts while semantic-release determines the next version, publishes to npm, and creates a Git tag and GitHub Release. The release job does not rebuild the package. It does not commit version updates or a changelog back to the repository. Release notes live in GitHub Releases.
+On each push to `main`, `release.yml` calls `test.yml` for checks, unit/Worker tests, client compatibility, and package verification. After verification, a read-only job builds `dist/` and uploads it as an immutable artifact for that workflow run. A separate release job downloads those assets, installs locked dependencies with lifecycle scripts disabled, and disables npm lifecycle scripts while semantic-release determines the next version, publishes to npm, and creates a Git tag and GitHub Release. The release job does not rebuild the package. It does not commit version updates or a changelog back to the repository. Release notes live in GitHub Releases.
 
 The npm package uses Trusted Publishing. In the npm settings for `@ponharu/pkgflare`, authorize GitHub owner `ponharu`, repository `pkgflare`, and workflow filename `release.yml`, with direct publishing allowed. The calling workflow is `release.yml`; `test.yml` is only the reusable verification workflow. No GitHub Environment is configured. Complete package ownership and trusted-publisher setup on npm before relying on automatic publication; see [npm's setup instructions](https://docs.npmjs.com/trusted-publishers/).
 
 The release job uses GitHub-hosted runners, Node.js 24, and the locked semantic-release npm plugin with OIDC support. `id-token: write` supplies npm authentication, while `GITHUB_TOKEN` creates tags and GitHub Releases. No long-lived npm publish token is required. Restrict traditional token publishing in npm with **Require two-factor authentication and disallow tokens**. Issue/PR release comments and labels are disabled. Release tooling still executes with publication authority; isolating the build reduces exposure but does not establish that a dependency or artifact is trustworthy.
 
-## Dependency security
+## Dependency updates
 
-`bun run audit` checks the complete locked dependency graph, including build and release tools. The required verification workflow runs it on pull requests and before releases; `dependency-audit.yml` also runs daily and can be dispatched manually to detect advisories published after a merge. Failed scheduled workflows use GitHub Actions notification settings; maintainers should subscribe to those failures.
+Runtime dependencies use exact versions. Root `overrides` keep older development-tool dependencies on patched versions, but overrides are not inherited by consumers of the published package. Package verification installs the published archive in a fresh project and checks CLI startup and Worker bundling.
 
-Runtime dependencies use exact versions. Root `overrides` keep older development-tool dependencies on patched versions, but overrides are not inherited by consumers of the published package. A fresh consumer install must also be checked when changing runtime dependency versions. Renovate keeps routine updates behind the release-age gate and creates security-update PRs without that delay or dependency-dashboard approval. Security updates still require successful checks and a manual merge.
-
-Audit exceptions are read from the generated `audit-exceptions.json` policy snapshot. Policy changes must update the approved source record and regenerate the snapshot. Each exception identifies one advisory, explains its technical scope, and expires. `scripts/audit-dependencies.ts` temporarily excludes **GHSA-vfj7-8cjw-p6xm** until **2026-11-09** because no patched `braces` release exists and its callers in semantic-release and its commit analyzer only compile trusted release configuration patterns. It is a release-tool dependency, not part of the Worker bundle or production CLI dependency graph. The raw `bun audit` command continues to report it. On expiry, verification and releases fail until the dependency is fixed, removed, or the exception is reassessed. Other advisories, including new advisories for the same package, remain blocking.
-
-The installed-package audit temporarily accepts **GHSA-4qv8-2p9j-2685**, **GHSA-f72v-6w45-q472**, and **GHSA-xjj6-f33q-929c** only for installed `undici@7.29.1`, until **2026-11-09**. Wrangler/Miniflare pin this affected version, including in Wrangler 4.152.0; root overrides do not reach consumers. The exception applies only to the production CLI dependency audit, and undici is absent from the Worker bundle. The audit validates actual installed versions and rejects other advisories, versions, malformed reports, and expired policies. Reassess the exceptions when Wrangler updates its dependency pin.
+Renovate keeps routine updates behind the release-age gate and creates security-update PRs without that delay or dependency-dashboard approval. Dependency updates require successful checks and a manual merge.
