@@ -6,6 +6,20 @@
       "versions": ["3.0.3"],
       "expires": "2026-11-09",
       "reason": "No patched braces release is available. Only trusted semantic-release configuration patterns reach braces; it is excluded from the Worker and production CLI dependency graphs."
+    },
+    {
+      "id": "GHSA-3g3m-2fjr-6pw4",
+      "name": "glob",
+      "versions": ["13.0.6"],
+      "expires": "2026-11-09",
+      "reason": "npm bundles vulnerable glob code; standalone overrides do not replace the installed bundle. Its release-tool callers process trusted repository package contents and patterns, not registry requests. Reassess when npm ships a patched bundle."
+    },
+    {
+      "id": "GHSA-g3hv-75wg-m249",
+      "name": "minimatch",
+      "versions": ["10.2.5", "10.2.6"],
+      "expires": "2026-11-09",
+      "reason": "npm bundles vulnerable minimatch code; standalone overrides do not replace the installed bundle. Its release-tool callers process trusted repository package contents and patterns, not registry requests. Reassess when npm ships a patched bundle."
     }
   ],
   "npm": [

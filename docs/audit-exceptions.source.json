@@ -1,0 +1,48 @@
+{
+  "bun": [
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "name": "braces",
+      "versions": ["3.0.3"],
+      "expires": "2026-11-09",
+      "reason": "No patched braces release is available. Only trusted semantic-release configuration patterns reach braces; it is excluded from the Worker and production CLI dependency graphs."
+    },
+    {
+      "id": "GHSA-3g3m-2fjr-6pw4",
+      "name": "glob",
+      "versions": ["13.0.6"],
+      "expires": "2026-11-09",
+      "reason": "npm bundles vulnerable glob code; standalone overrides do not replace the installed bundle. Its release-tool callers process trusted repository package contents and patterns, not registry requests. Reassess when npm ships a patched bundle."
+    },
+    {
+      "id": "GHSA-g3hv-75wg-m249",
+      "name": "minimatch",
+      "versions": ["10.2.5", "10.2.6"],
+      "expires": "2026-11-09",
+      "reason": "npm bundles vulnerable minimatch code; standalone overrides do not replace the installed bundle. Its release-tool callers process trusted repository package contents and patterns, not registry requests. Reassess when npm ships a patched bundle."
+    }
+  ],
+  "npm": [
+    {
+      "id": "GHSA-4qv8-2p9j-2685",
+      "name": "undici",
+      "versions": ["7.29.1"],
+      "expires": "2026-11-09",
+      "reason": "Wrangler's Miniflare dependency pins undici 7.29.1, including in Wrangler 4.152.0. No compatible upstream release uses the patched version. This exception covers only the installed CLI audit; the Worker does not bundle undici. Reassess when Wrangler updates its pin."
+    },
+    {
+      "id": "GHSA-f72v-6w45-q472",
+      "name": "undici",
+      "versions": ["7.29.1"],
+      "expires": "2026-11-09",
+      "reason": "Wrangler's Miniflare dependency pins undici 7.29.1, including in Wrangler 4.152.0. No compatible upstream release uses the patched version. This exception covers only the installed CLI audit; the Worker does not bundle undici. Reassess when Wrangler updates its pin."
+    },
+    {
+      "id": "GHSA-xjj6-f33q-929c",
+      "name": "undici",
+      "versions": ["7.29.1"],
+      "expires": "2026-11-09",
+      "reason": "Wrangler's Miniflare dependency pins undici 7.29.1, including in Wrangler 4.152.0. No compatible upstream release uses the patched version. This exception covers only the installed CLI audit; the Worker does not bundle undici. Reassess when Wrangler updates its pin."
+    }
+  ]
+}

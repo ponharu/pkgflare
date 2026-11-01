@@ -58,7 +58,8 @@
     "prepack": "bun run build",
     "prepare": "lefthook install",
     "release": "semantic-release",
-    "audit": "bun scripts/audit-dependencies.ts"
+    "audit": "bun scripts/generate-audit-exceptions.ts --check && bun scripts/audit-dependencies.ts",
+    "audit:generate": "bun scripts/generate-audit-exceptions.ts"
   },
   "dependencies": {
     "jiti": "2.7.0",
@@ -90,8 +91,6 @@
     "yarn": "^1.22.22"
   },
   "overrides": {
-    "glob": "14.0.3",
-    "minimatch": "11.0.3",
     "sharp": "0.35.5",
     "undici@6": "6.29.1",
     "undici@7": "7.30.1",
