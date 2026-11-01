@@ -90,6 +90,8 @@
     "yarn": "^1.22.22"
   },
   "overrides": {
+    "glob": "14.0.3",
+    "minimatch": "11.0.3",
     "sharp": "0.35.5",
     "undici@6": "6.29.1",
     "undici@7": "7.30.1",
