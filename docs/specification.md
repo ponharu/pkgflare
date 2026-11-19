@@ -37,7 +37,7 @@ The normalized runtime configuration is rejected when its UTF-8 JSON representat
 
 If ownership state is absent and a deterministic resource name already exists, deployment stops. Existing resources are adopted only when the user reruns with `--adopt-existing` after verifying the active account and resources. More than one matching D1 database is always an error. Conflicting account IDs in configuration, deployment state, and the environment are rejected; access to the selected account is verified by the targeted Wrangler operations rather than requiring account-list permission.
 
-R2 resource discovery lists bucket metadata and matches the configured name without requesting bucket analytics. Failed or malformed discovery stops deployment before bucket creation or Worker deployment.
+R2 resource discovery invokes the pinned Wrangler bucket-list command with the resolved account explicitly set, parses its labelled metadata output, and matches the configured name without requesting bucket analytics. Failed or malformed discovery stops deployment before bucket creation or Worker deployment.
 
 Every packaged SQL migration is copied into deployment state. Pending migrations run before the new Worker is deployed. Migrations are append-only and use expand/contract changes so the previous Worker remains compatible if migration succeeds but deployment fails. Both migration and deployment failures stop the command and are safe to retry.
 

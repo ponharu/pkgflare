@@ -1,9 +1,14 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deploy } from "../../src/cli/deploy.js";
-import type { CommandResult, WranglerRunner } from "../../src/cli/runner.js";
+import {
+  createWranglerRunner,
+  type CommandResult,
+  type WranglerRunner,
+} from "../../src/cli/runner.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -62,7 +67,11 @@ function provisioningRunner(
       );
     }
     if (argumentsArray[0] === "r2" && argumentsArray[2] === "list") {
-      return result(JSON.stringify(options.existing ? [{ name: "acme-registry-packages" }] : []));
+      return result(
+        options.existing
+          ? "Listing buckets...\nname: acme-registry-packages\ncreation_date: 2026-01-01T00:00:00.000Z\n"
+          : "Listing buckets...\n",
+      );
     }
     if (argumentsArray[0] === "d1" && argumentsArray[1] === "create") {
       const state = JSON.parse(await readFile(stateFile, "utf8")) as Record<string, unknown>;
@@ -182,7 +191,7 @@ describe("deploy", () => {
       }
       if (arguments_[0] === "r2" && arguments_[2] === "list") {
         return result(
-          JSON.stringify([{ name: "unrelated-bucket" }, { name: "acme-registry-packages" }]),
+          "Listing buckets...\nname: unrelated-bucket\ncreation_date: 2026-01-01T00:00:00.000Z\n\nname: acme-registry-packages\ncreation_date: 2026-01-01T00:00:00.000Z\n",
         );
       }
       return base(arguments_, options);
@@ -205,7 +214,11 @@ describe("deploy", () => {
     { stdout: "", exitCode: 1 },
     { stdout: "{}", exitCode: 0 },
     { stdout: "[{}]", exitCode: 0 },
-    { stdout: '[{"name":"acme-registry-packages"},null]', exitCode: 0 },
+    {
+      stdout:
+        "Listing buckets...\nname: acme-registry-packages\ncreation_date: 2026-01-01\n\ninvalid record",
+      exitCode: 0,
+    },
     { stdout: "not-json", exitCode: 0 },
   ])("does not create or deploy after failed or invalid bucket discovery: %j", async (response) => {
     const cwd = await project();
@@ -225,6 +238,57 @@ describe("deploy", () => {
     );
     expect(commands.some((command) => command[0] === "deploy")).toBe(false);
   });
+
+  it("discovers an existing bucket with the real pinned Wrangler CLI and the configured account", async () => {
+    const accountId = "0123456789abcdef0123456789abcdef";
+    const cwd = await project(accountId);
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? "");
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify({
+          success: true,
+          errors: [],
+          messages: [],
+          result: {
+            buckets: [
+              { name: "acme-registry-packages", creation_date: "2026-01-01T00:00:00.000Z" },
+            ],
+          },
+        }),
+      );
+    });
+    await new Promise<void>((complete) => server.listen(0, "127.0.0.1", complete));
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string")
+        throw new Error("Expected a local TCP address");
+      vi.stubEnv("CLOUDFLARE_API_BASE_URL", `http://127.0.0.1:${address.port}`);
+      vi.stubEnv("CLOUDFLARE_API_TOKEN", "test-token");
+      vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", undefined);
+      vi.stubEnv("WRANGLER_SEND_METRICS", "false");
+      vi.stubEnv("CI", "true");
+      const base = provisioningRunner(cwd, [], { existing: true });
+      const wrangler = createWranglerRunner(cwd);
+      const runner: WranglerRunner = (args, options) =>
+        args[0] === "r2" && args[2] === "list" ? wrangler(args, options) : base(args, options);
+      const adopted = await deploy({
+        cwd,
+        runner,
+        assetsDirectory: resolve("dist"),
+        adoptExisting: true,
+      });
+      expect(JSON.parse(await readFile(adopted.stateFile, "utf8"))).toMatchObject({
+        r2_buckets: [{ binding: "PKGFLARE_BUCKET", bucket_name: "acme-registry-packages" }],
+      });
+      expect(requests).toEqual([`/accounts/${accountId}/r2/buckets`]);
+    } finally {
+      await new Promise<void>((complete, reject) =>
+        server.close((error) => (error ? reject(error) : complete())),
+      );
+    }
+  }, 15000);
 
   it("requires accountId when credentials expose multiple accounts", async () => {
     const cwd = await project();
