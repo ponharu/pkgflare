@@ -10,7 +10,7 @@ export interface CommandResult {
 
 export type WranglerRunner = (
   arguments_: readonly string[],
-  options?: { allowFailure?: boolean; silent?: boolean },
+  options?: { allowFailure?: boolean; silent?: boolean; env?: Record<string, string> },
 ) => Promise<CommandResult>;
 
 function wranglerEntry(): string {
@@ -23,7 +23,7 @@ export function createWranglerRunner(cwd: string): WranglerRunner {
     const result = await new Promise<CommandResult>((resolve, reject) => {
       const child = spawn(process.execPath, [wranglerEntry(), ...arguments_], {
         cwd,
-        env: process.env,
+        env: { ...process.env, ...options.env },
         shell: false,
         stdio: ["inherit", "pipe", "pipe"],
       });

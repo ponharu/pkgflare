@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import type { NormalizedConfig } from "../config.js";
 import { loadConfig } from "./config-loader.js";
 import { createWranglerRunner, type WranglerRunner } from "./runner.js";
@@ -211,27 +212,30 @@ async function recoverD1(
 async function recoverR2(
   runner: WranglerRunner,
   bucketName: string,
-  configArgs: readonly string[],
+  accountId: string,
 ): Promise<R2Binding | null> {
-  const result = await runner(["r2", "bucket", "list", "--json", ...configArgs], {
+  const result = await runner(["r2", "bucket", "list"], {
     silent: true,
     allowFailure: true,
+    env: { CLOUDFLARE_ACCOUNT_ID: accountId },
   });
   if (result.exitCode !== 0) {
     throw new Error(`unable to list R2 buckets (Wrangler exited with status ${result.exitCode})`);
   }
-  const entries: unknown = JSON.parse(result.stdout);
-  if (!Array.isArray(entries)) throw new Error("Wrangler returned invalid R2 bucket information");
-  const names = entries.map((entry: unknown) => {
-    if (
-      typeof entry !== "object" ||
-      entry === null ||
-      !("name" in entry) ||
-      typeof entry.name !== "string"
-    ) {
+  const output = stripVTControlCharacters(result.stdout);
+  const marker = "Listing buckets...";
+  const markerIndex = output.indexOf(marker);
+  if (markerIndex === -1) throw new Error("Wrangler returned invalid R2 bucket information");
+  const listing = output.slice(markerIndex + marker.length).trim();
+  if (listing === "") return null;
+  const names = listing.split(/\n\s*\n/u).map((record) => {
+    const match =
+      /^name:\s+([a-z0-9][a-z0-9-]{1,61}[a-z0-9])\r?\ncreation_date:\s+\S[^\r\n]*$/u.exec(
+        record.trim(),
+      );
+    if (match?.[1] === undefined)
       throw new Error("Wrangler returned invalid R2 bucket information");
-    }
-    return entry.name;
+    return match[1];
   });
   return names.includes(bucketName) ? { binding: r2Binding, bucket_name: bucketName } : null;
 }
@@ -312,6 +316,7 @@ async function ensureResources(
   cwd: string,
   runner: WranglerRunner,
   adoptExisting: boolean,
+  accountId: string,
 ): Promise<WranglerState> {
   const d1Name = `${state.name}-metadata`;
   const r2Name = `${state.name}-packages`;
@@ -355,7 +360,7 @@ async function ensureResources(
   }
 
   if (configuredR2.length === 0) {
-    const recovered = await recoverR2(runner, r2Name, configArgs);
+    const recovered = await recoverR2(runner, r2Name, accountId);
     if (recovered !== null) {
       if (!adoptExisting) {
         throw new Error(
@@ -416,7 +421,14 @@ export async function deploy(options: DeployOptions): Promise<DeployResult> {
   await writeState(stateFile, state);
   await copyRuntimeFiles(stateDirectory, options.assetsDirectory ?? packageRoot());
 
-  state = await ensureResources(state, stateFile, cwd, runner, options.adoptExisting ?? false);
+  state = await ensureResources(
+    state,
+    stateFile,
+    cwd,
+    runner,
+    options.adoptExisting ?? false,
+    accountId,
+  );
   const configArgs = configArguments(stateFile, cwd);
   await runner(["d1", "migrations", "apply", d1Binding, "--remote", ...configArgs]);
 
