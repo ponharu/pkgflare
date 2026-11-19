@@ -213,13 +213,27 @@ async function recoverR2(
   bucketName: string,
   configArgs: readonly string[],
 ): Promise<R2Binding | null> {
-  const result = await runner(["r2", "bucket", "info", bucketName, "--json", ...configArgs], {
+  const result = await runner(["r2", "bucket", "list", "--json", ...configArgs], {
     silent: true,
     allowFailure: true,
   });
-  if (result.exitCode === 0) return { binding: r2Binding, bucket_name: bucketName };
-  if (/not found|does not exist|10006/i.test(result.stderr)) return null;
-  throw new Error(`unable to inspect the ${bucketName} R2 bucket with the current credentials`);
+  if (result.exitCode !== 0) {
+    throw new Error(`unable to list R2 buckets (Wrangler exited with status ${result.exitCode})`);
+  }
+  const entries: unknown = JSON.parse(result.stdout);
+  if (!Array.isArray(entries)) throw new Error("Wrangler returned invalid R2 bucket information");
+  const names = entries.map((entry: unknown) => {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("name" in entry) ||
+      typeof entry.name !== "string"
+    ) {
+      throw new Error("Wrangler returned invalid R2 bucket information");
+    }
+    return entry.name;
+  });
+  return names.includes(bucketName) ? { binding: r2Binding, bucket_name: bucketName } : null;
 }
 
 function accountsFromWhoami(value: unknown): AccountEntry[] {
