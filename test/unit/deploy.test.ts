@@ -61,9 +61,8 @@ function provisioningRunner(
           : "[]",
       );
     }
-    if (argumentsArray[0] === "r2" && argumentsArray[2] === "info") {
-      if (options.existing) return result(JSON.stringify({ name: "acme-registry-packages" }));
-      return { exitCode: 1, stdout: "", stderr: "not found" };
+    if (argumentsArray[0] === "r2" && argumentsArray[2] === "list") {
+      return result(JSON.stringify(options.existing ? [{ name: "acme-registry-packages" }] : []));
     }
     if (argumentsArray[0] === "d1" && argumentsArray[1] === "create") {
       const state = JSON.parse(await readFile(stateFile, "utf8")) as Record<string, unknown>;
@@ -105,7 +104,7 @@ describe("deploy", () => {
       ["whoami", "--json"],
       ["d1", "list", "--json"],
       ["d1", "create", "acme-registry-metadata"],
-      ["r2", "bucket", "info"],
+      ["r2", "bucket", "list"],
       ["r2", "bucket", "create"],
       ["d1", "migrations", "apply"],
       ["versions", "list", "--name"],
@@ -171,6 +170,60 @@ describe("deploy", () => {
       binding: "PKGFLARE_BUCKET",
       bucket_name: "acme-registry-packages",
     });
+  });
+
+  it("adopts an existing bucket without requiring access to bucket analytics", async () => {
+    const cwd = await project();
+    const commands: string[][] = [];
+    const base = provisioningRunner(cwd, commands, { existing: true });
+    const runner: WranglerRunner = async (arguments_, options) => {
+      if (arguments_[0] === "r2" && arguments_[2] === "info") {
+        return { exitCode: 1, stdout: "", stderr: "Analytics access denied" };
+      }
+      if (arguments_[0] === "r2" && arguments_[2] === "list") {
+        return result(
+          JSON.stringify([{ name: "unrelated-bucket" }, { name: "acme-registry-packages" }]),
+        );
+      }
+      return base(arguments_, options);
+    };
+    const adopted = await deploy({
+      cwd,
+      runner,
+      assetsDirectory: resolve("dist"),
+      adoptExisting: true,
+    });
+    expect(JSON.parse(await readFile(adopted.stateFile, "utf8"))).toMatchObject({
+      r2_buckets: [{ binding: "PKGFLARE_BUCKET", bucket_name: "acme-registry-packages" }],
+    });
+    expect(commands.some((command) => command.slice(0, 3).join(" ") === "r2 bucket create")).toBe(
+      false,
+    );
+  });
+
+  it.each([
+    { stdout: "", exitCode: 1 },
+    { stdout: "{}", exitCode: 0 },
+    { stdout: "[{}]", exitCode: 0 },
+    { stdout: '[{"name":"acme-registry-packages"},null]', exitCode: 0 },
+    { stdout: "not-json", exitCode: 0 },
+  ])("does not create or deploy after failed or invalid bucket discovery: %j", async (response) => {
+    const cwd = await project();
+    const commands: string[][] = [];
+    const base = provisioningRunner(cwd, commands, { existing: true });
+    const runner: WranglerRunner = async (arguments_, options) => {
+      if (arguments_[0] === "r2" && arguments_[2] === "list") {
+        return { ...response, stderr: "Access denied" };
+      }
+      return base(arguments_, options);
+    };
+    await expect(
+      deploy({ cwd, runner, assetsDirectory: resolve("dist"), adoptExisting: true }),
+    ).rejects.toThrow();
+    expect(commands.some((command) => command.slice(0, 3).join(" ") === "r2 bucket create")).toBe(
+      false,
+    );
+    expect(commands.some((command) => command[0] === "deploy")).toBe(false);
   });
 
   it("requires accountId when credentials expose multiple accounts", async () => {
